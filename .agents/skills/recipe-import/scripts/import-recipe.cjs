@@ -4,6 +4,7 @@ const {
   ImportError,
   extract: extractMarleySpoon,
   isMarleyHost,
+  normalizeIngredient,
   parseRecipeUrl
 } = require("./sources/marley-spoon.cjs");
 
@@ -55,6 +56,49 @@ function selfTest() {
   assert.equal(parsed.url.toString(), "https://marleyspoon.com.au/menu/657515-sesame-chicken-katsu");
   assert.equal(isMarleyHost("marleyspoon.com.au"), true);
   assert.equal(isMarleyHost("example.com"), false);
+
+  assert.deepEqual(normalizeIngredient("(S) Japanese rice"), {
+    text: "(S) Japanese rice",
+    name: "Japanese rice",
+    quantity: 1,
+    unit: "packet",
+    size: "S"
+  });
+  assert.deepEqual(normalizeIngredient("(S) onion"), {
+    text: "(S) onion",
+    name: "onion",
+    quantity: 1,
+    unit: "whole",
+    size: "S"
+  });
+  assert.deepEqual(normalizeIngredient("2 x (S) sesame oil"), {
+    text: "2 x (S) sesame oil",
+    name: "sesame oil",
+    quantity: 2,
+    unit: "packet",
+    size: "S"
+  });
+  assert.deepEqual(normalizeIngredient("1½ tbs olive oil"), {
+    text: "1½ tbs olive oil",
+    name: "olive oil",
+    quantity: 1.5,
+    unit: "tbsp",
+    size: null
+  });
+  assert.deepEqual(normalizeIngredient("180ml (¾ cup) boiling water"), {
+    text: "180ml (¾ cup) boiling water",
+    name: "boiling water",
+    quantity: 180,
+    unit: "mL",
+    size: null
+  });
+  assert.deepEqual(normalizeIngredient("2P chicken breast fillet"), {
+    text: "2P chicken breast fillet",
+    name: "chicken breast fillet",
+    quantity: 2,
+    unit: "portion",
+    size: null
+  });
 
   const ready = normalize({
     source: { site: "test", url: parsed.url.toString(), id: "1" },

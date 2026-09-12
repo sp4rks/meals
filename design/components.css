@@ -90,6 +90,8 @@ footer { margin-top: var(--space-12); border-top: var(--border); padding-block: 
 .recipe-body .button { margin-top: 1rem; }
 .recipe-detail-image { display: block; width: 100%; max-height: 420px; object-fit: cover; border-radius: var(--radius-md); }
 .recipe-detail-grid { align-items: start; }
+.card.recipe-hero-card { padding: 0; }
+.recipe-detail-main { min-width: 0; }
 .recipe-detail-card { display: grid; gap: var(--space-5); min-width: 0; }
 .recipe-detail-panel h2 { margin-bottom: .65rem; }
 .recipe-facts { display: grid; gap: .45rem; }
@@ -104,6 +106,13 @@ footer { margin-top: var(--space-12); border-top: var(--border); padding-block: 
 .recipe-detail-card .choice { align-items: flex-start; gap: .45rem; height: auto; font-size: var(--text-sm); }
 .recipe-detail-card .choice input { width: 16px; height: 16px; margin-top: .15rem; }
 .recipe-detail-card .choice span { display: grid; gap: .1rem; line-height: 1.3; }
+.cook-action .button { width: 100%; }
+.cook-history-list { padding: 0; margin: 0; list-style: none; }
+.cook-history-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .75rem 0; border-bottom: var(--border); }
+.cook-history-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.cook-history-row time { color: var(--color-secondary); font-size: var(--text-sm); }
+.cook-history-remove { margin: 0; }
+.cook-history-remove .button { min-height: 40px; padding: .45rem .65rem; }
 .import-panel { margin-bottom: var(--space-6); }
 .import-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: end; }
 .import-row .button { white-space: nowrap; }
@@ -233,9 +242,7 @@ dialog::backdrop { background: #29352c66; }
 }
 @media (min-width: 700px) {
   .recipe-detail-grid { grid-template-columns: minmax(0, 7fr) minmax(200px, 3fr); }
-  .recipe-hero-card { grid-column: 1; grid-row: 1; }
-  .recipe-detail-card { grid-column: 2; grid-row: 1 / span 2; }
-  .recipe-steps-card { grid-column: 1; grid-row: 2; }
+  .recipe-detail-card { grid-column: 2; }
 }
 @media (min-width: 1000px) {
   .app-shell { display: grid; grid-template-columns: var(--width-sidebar) minmax(0, 1fr); }

@@ -9,6 +9,7 @@ const RECIPE_QUERY = [
   "    description",
   "    difficulty",
   "    duration { from to unit }",
+  "    attributes { name }",
   "    allergens { name }",
   "    nutritionalInformation { key perPortion }",
   "    shippedIngredients { name nameWithQuantity allergens { name } }",
@@ -30,6 +31,81 @@ function clean(value) {
   return typeof value === "string"
     ? value.replace(/__([^_]+)__/g, "$1").replace(/\s+/g, " ").trim()
     : "";
+}
+
+const SIZE_PATTERN = /\((XXL|XL|XS|S|M|L)\)/i;
+const FRACTIONS = { "¼": 0.25, "½": 0.5, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3, "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875 };
+const WHOLE_INGREDIENT_PATTERN = /\b(?:apple|avocado|banana|beetroot|broccoli|cabbage|capsicum|carrot|celery|cucumber|egg(?:plant)?|garlic|lemon|lime|onion|pak choy|pear|potato|pumpkin|shallot|spring onion|tomato|zucchini)\b/i;
+
+function parseQuantity(value) {
+  return value
+    .replace(/([¼½¾⅓⅔⅛⅜⅝⅞])/g, " $1")
+    .replace(",", ".")
+    .trim()
+    .split(/\s+/)
+    .reduce((total, part) => {
+      if (FRACTIONS[part]) return total + FRACTIONS[part];
+      if (/^\d+\/\d+$/.test(part)) {
+        const [numerator, denominator] = part.split("/").map(Number);
+        return denominator ? total + numerator / denominator : total;
+      }
+      const number = Number(part);
+      return Number.isNaN(number) ? total : total + number;
+    }, 0);
+}
+
+function ingredientUnit(name) {
+  return WHOLE_INGREDIENT_PATTERN.test(name) ? "whole" : "packet";
+}
+
+function normalizeUnit(value) {
+  const unit = value.toLowerCase();
+  if (unit === "ml") return "mL";
+  if (unit === "l") return "L";
+  if (/^kg$/.test(unit)) return "kg";
+  if (/^g$/.test(unit)) return "g";
+  if (/^tb/.test(unit)) return "tbsp";
+  if (/^tsp|^teaspoon/.test(unit)) return "tsp";
+  if (/^cup/.test(unit)) return "cup";
+  return unit;
+}
+
+function normalizeIngredient(value) {
+  const text = clean(value);
+  const size = text.match(SIZE_PATTERN)?.[1].toUpperCase() || null;
+  let remaining = text.replace(/\s*\((?:XXL|XL|XS|S|M|L)\)\s*/gi, " ").replace(/\s+/g, " ").trim();
+  let quantity = null;
+  let unit = null;
+  let name = remaining;
+
+  const portions = remaining.match(/^(\d+)\s*P\b\s*(.*)$/i);
+  const packs = remaining.match(/^(\d+(?:[.,]\d+)?)\s*x\s+(.+)$/i);
+  const amount = remaining.match(/^((?:\d+(?:[.,]\d+)?\s*)?(?:[¼½¾⅓⅔⅛⅜⅝⅞])|\d+(?:[.,]\d+)?|\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+)\s*(kg|g|ml|l|tbsp?|tbs|tsp|tablespoons?|teaspoons?|cups?)\b\s*(.*)$/i);
+  const count = remaining.match(/^(\d+(?:[.,]\d+)?)\s+(.+)$/);
+
+  if (portions) {
+    quantity = Number(portions[1]);
+    unit = "portion";
+    name = portions[2];
+  } else if (packs) {
+    quantity = parseQuantity(packs[1]);
+    unit = ingredientUnit(packs[2]);
+    name = packs[2];
+  } else if (amount) {
+    quantity = parseQuantity(amount[1]);
+    unit = normalizeUnit(amount[2]);
+    name = amount[3];
+  } else if (count) {
+    quantity = parseQuantity(count[1]);
+    unit = "whole";
+    name = count[2];
+  } else if (size) {
+    quantity = 1;
+    unit = ingredientUnit(remaining);
+  }
+
+  name = name.replace(/^\([^)]*\)\s*/, "").replace(/\s+/g, " ").trim();
+  return { text, name, quantity, unit, size };
 }
 
 function perPortion(items, key) {
@@ -193,6 +269,7 @@ async function extract(url) {
           }
         : null,
       difficulty: clean(recipe.difficulty),
+      tags: (recipe.attributes || []).map((attribute) => clean(attribute.name)).filter(Boolean),
       macros: {
         perServing: {
           kcal: perPortion(nutrition, "energy_kcal"),
@@ -204,12 +281,12 @@ async function extract(url) {
       allergens: (recipe.allergens || []).map((allergen) => clean(allergen.name)).filter(Boolean),
       ingredients: [
         ...(recipe.shippedIngredients || []).map((item) => ({
-          text: clean(item.nameWithQuantity || item.name),
+          ...normalizeIngredient(item.nameWithQuantity || item.name),
           kind: "shipped",
           allergens: (item.allergens || []).map((allergen) => clean(allergen.name)).filter(Boolean)
         })),
         ...(recipe.assumedIngredients || []).map((item) => ({
-          text: clean(item.name),
+          ...normalizeIngredient(item.name),
           kind: "assumed",
           allergens: []
         }))
@@ -223,4 +300,4 @@ async function extract(url) {
   };
 }
 
-module.exports = { ImportError, extract, isMarleyHost, parseRecipeUrl };
+module.exports = { ImportError, extract, isMarleyHost, normalizeIngredient, parseRecipeUrl };

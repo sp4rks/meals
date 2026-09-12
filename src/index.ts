@@ -6,12 +6,13 @@ import {
 
 type RecipeSummary = {
   id: string;
-  source_site: string;
+  source: string;
   source_url: string;
   title: string;
   subtitle: string;
   description: string;
   image_url: string;
+  tags_json: string;
 };
 
 type RecipeMacros = {
@@ -19,6 +20,16 @@ type RecipeMacros = {
   protein: number | null;
   carbs: number | null;
   fat: number | null;
+};
+
+type RecipeIngredient = {
+  text: string;
+  name?: string;
+  quantity?: number | null;
+  unit?: string | null;
+  size?: string | null;
+  kind: string;
+  allergens: string[];
 };
 
 type RecipeRow = RecipeSummary & {
@@ -30,6 +41,11 @@ type RecipeRow = RecipeSummary & {
   allergens_json: string;
   ingredients_json: string;
   steps_json: string;
+};
+
+type CookRecord = {
+  id: number;
+  cooked_at: string;
 };
 
 type ImportCandidate = {
@@ -45,9 +61,10 @@ type ImportCandidate = {
     description: string;
     duration: { from: number; to: number; unit: string } | null;
     difficulty: string;
+    tags: string[];
     macros: { perServing: RecipeMacros };
     allergens: string[];
-    ingredients: Array<{ text: string; kind: string; allergens: string[] }>;
+    ingredients: RecipeIngredient[];
     steps: Array<{ title: string; text: string }>;
     utensils: string[];
     images: Array<{ url: string; kind: string }>;
@@ -83,7 +100,7 @@ const recipeCard = (recipe: RecipeSummary) => [
   recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '',
   '<p>' + escapeHtml(recipe.description) + '</p>',
   '<a class="button quiet" href="' + recipePath(recipe) + '">View recipe →</a>',
-  '<div class="tags"><span class="tag">' + escapeHtml(recipe.source_site.replace('-', ' ')) + '</span></div>',
+  '<div class="tags">' + parseJson<string[]>(recipe.tags_json, []).map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>',
   '</div>',
   '</article>'
 ].join('');
@@ -96,11 +113,33 @@ const parseJson = <T>(value: string, fallback: T) => {
   }
 };
 
-const recipeDetailPage = (recipe: RecipeRow) => {
-  const ingredients = parseJson<Array<{ text: string; kind: string; allergens: string[] }>>(recipe.ingredients_json, []);
+const formatIngredient = (ingredient: RecipeIngredient) => {
+  if (!ingredient.name || ingredient.quantity == null || !ingredient.unit) return ingredient.text;
+  const quantity = String(ingredient.quantity);
+  const size = ingredient.size ? ({ XS: 'extra-small', S: 'small', M: 'medium', L: 'large', XL: 'extra-large', XXL: 'extra-extra-large' } as Record<string, string>)[ingredient.size] || ingredient.size : '';
+  const unit = ingredient.unit === 'whole'
+    ? ''
+    : ingredient.unit === 'packet'
+      ? (ingredient.quantity === 1 ? 'packet' : 'packets')
+      : ingredient.unit === 'portion'
+        ? (ingredient.quantity === 1 ? 'portion' : 'portions')
+        : ingredient.unit;
+  return [quantity, size, unit, ingredient.name].filter(Boolean).join(' ');
+};
+
+const formatCookedAt = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat('en-AU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Australia/Melbourne' }).format(date);
+};
+
+const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[]) => {
+  const ingredients = parseJson<RecipeIngredient[]>(recipe.ingredients_json, []);
   const steps = parseJson<Array<{ title: string; text: string }>>(recipe.steps_json, []);
   const macros = parseJson<{ perServing: RecipeMacros }>(recipe.macros_json, { perServing: { kcal: null, protein: null, carbs: null, fat: null } });
   const storedAllergens = parseJson<string[]>(recipe.allergens_json, []);
+  const tags = parseJson<string[]>(recipe.tags_json, []);
   const allergens = storedAllergens.length
     ? storedAllergens
     : [...new Set(ingredients.flatMap((ingredient) => ingredient.allergens))];
@@ -127,7 +166,7 @@ const recipeDetailPage = (recipe: RecipeRow) => {
     '<!doctype html>',
     '<html lang="en-AU">',
     '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<meta name="theme-color" content="#365f43"><meta name="description" content="' + escapeHtml(recipe.title) + '">',
+    '<meta name="theme-color" content="#365f43"><meta name="description" content="' + escapeHtml(recipe.title) + '"><link rel="icon" href="/favicon.svg" type="image/svg+xml">',
     '<title>' + escapeHtml(recipe.title) + ' — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css">',
     '</head>',
     '<body>',
@@ -139,13 +178,20 @@ const recipeDetailPage = (recipe: RecipeRow) => {
     '<main id="main">',
     '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li><a href="/">Recipes</a></li><li>' + escapeHtml(recipe.title) + '</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
     '<section aria-labelledby="recipe-heading">',
-    '<div class="section-heading"><div><p class="eyebrow">Recipe · ' + escapeHtml(recipe.source_site.replace('-', ' ')) + '</p><h1 id="recipe-heading">' + escapeHtml(recipe.title) + '</h1>' + (recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '') + '<p class="muted spaced">' + escapeHtml(recipe.description) + '</p></div><a class="button secondary" href="/">← All recipes</a></div>',
+    '<div class="section-heading"><div><p class="eyebrow">Recipe · ' + escapeHtml(recipe.source.replace('-', ' ')) + '</p><h1 id="recipe-heading">' + escapeHtml(recipe.title) + '</h1>' + (recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '') + '<p class="muted spaced">' + escapeHtml(recipe.description) + '</p>' + (tags.length ? '<div class="tags">' + tags.map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>' : '') + '</div><a class="button secondary" href="/">← All recipes</a></div>',
     '<div class="recipe-detail-grid">',
+    '<div class="stack recipe-detail-main">',
     '<article class="card recipe-hero-card">',
     recipe.image_url
       ? '<img class="recipe-detail-image" src="' + escapeHtml(recipe.image_url) + '" alt="' + escapeHtml(recipe.title) + '" decoding="async">'
       : '<div class="meal-art butter" aria-hidden="true"><span>something good</span></div>',
     '</article>',
+    '<article class="card recipe-steps-card"><div class="section-heading"><h2>Recipe</h2><span class="badge success">' + steps.length + ' steps</span></div>',
+    steps.length
+      ? '<ol class="instructions">' + steps.map((step) => '<li>' + (step.title ? '<strong>' + escapeHtml(step.title) + '</strong>' : '') + (step.text ? '<p>' + escapeHtml(step.text) + '</p>' : '') + '</li>').join('') + '</ol>'
+      : '<p class="muted">Cooking steps haven’t been added to this recipe yet.</p>',
+    '</article>',
+    '</div>',
     '<div class="recipe-detail-card">',
     '<div class="card recipe-detail-panel">',
     '<h2>Details</h2>',
@@ -162,15 +208,16 @@ const recipeDetailPage = (recipe: RecipeRow) => {
     '<div class="card recipe-detail-panel recipe-ingredients-section">',
     '<h2>Ingredients</h2>',
     ingredients.length
-      ? '<ul class="recipe-ingredients">' + ingredients.map((ingredient, index) => '<li><label class="choice"><input type="checkbox" id="ingredient-' + (index + 1) + '"><span>' + escapeHtml(ingredient.text) + (ingredient.kind === 'assumed' ? '<small class="help">Pantry item</small>' : '') + (ingredient.allergens.length ? '<small class="help">Contains ' + escapeHtml(ingredient.allergens.join(', ')) + '</small>' : '') + '</span></label></li>').join('') + '</ul>'
+      ? '<ul class="recipe-ingredients">' + ingredients.map((ingredient, index) => '<li><label class="choice"><input type="checkbox" id="ingredient-' + (index + 1) + '"><span>' + escapeHtml(formatIngredient(ingredient)) + (ingredient.kind === 'assumed' ? '<small class="help">Pantry item</small>' : '') + (ingredient.allergens.length ? '<small class="help">Contains ' + escapeHtml(ingredient.allergens.join(', ')) + '</small>' : '') + '</span></label></li>').join('') + '</ul>'
       : '<p class="muted">Ingredients haven’t been added to this recipe yet.</p>',
     '</div>',
+    '<section class="card recipe-detail-panel cook-history" aria-labelledby="cook-history-heading"><div class="section-heading"><h2 id="cook-history-heading">Recent Cooks</h2></div>',
+    cooks.length
+      ? '<ol class="cook-history-list">' + cooks.map((cook) => '<li class="cook-history-row"><time datetime="' + escapeHtml(cook.cooked_at) + '">' + escapeHtml(formatCookedAt(cook.cooked_at)) + '</time><form class="cook-history-remove" action="' + recipePath(recipe) + '/cooks/' + cook.id + '/delete" method="post"><button class="button quiet" type="submit" aria-label="Remove cook from ' + escapeHtml(formatCookedAt(cook.cooked_at)) + '">Remove</button></form></li>').join('') + '</ol>'
+      : '<p class="muted">No cooks recorded yet.</p>',
+    '</section>',
+    '<form class="cook-action" action="' + recipePath(recipe) + '/cook" method="post"><button class="button" type="submit">I just cooked this!</button></form>',
     '</div>',
-    '<article class="card recipe-steps-card"><div class="section-heading"><h2>Recipe</h2><span class="badge success">' + steps.length + ' steps</span></div>',
-    steps.length
-      ? '<ol class="instructions">' + steps.map((step) => '<li>' + (step.title ? '<strong>' + escapeHtml(step.title) + '</strong>' : '') + (step.text ? '<p>' + escapeHtml(step.text) + '</p>' : '') + '</li>').join('') + '</ol>'
-      : '<p class="muted">Cooking steps haven’t been added to this recipe yet.</p>',
-    '</article>',
     '</div>',
     '</section>',
     '<footer>meals · local development</footer>',
@@ -180,7 +227,7 @@ const recipeDetailPage = (recipe: RecipeRow) => {
 
 const importForm = (flash?: Flash) => [
   '<form class="card stack import-panel" action="/" method="post">',
-  '<div class="section-heading"><div><p class="eyebrow">Quick import</p><h2>Bring in a recipe</h2><p class="muted">Paste a recipe URL and we’ll add it to the box for review.</p></div><span class="tag">Marley Spoon first</span></div>',
+  '<div class="section-heading"><div><p class="eyebrow">Quick import</p><h2>Bring in a recipe</h2><p class="muted">Paste a recipe URL and we’ll add it to the box for review.</p></div></div>',
   '<div class="import-row"><div class="field"><label for="import-url">Recipe URL</label><input id="import-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://marleyspoon.com.au/menu/…" value="' + escapeHtml(flash?.url || '') + '" required></div><button class="button" type="submit">Import recipe ↗</button></div>',
   flash
     ? '<div class="notice ' + (flash.kind === 'error' ? 'warning' : '') + ' import-status" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>'
@@ -192,7 +239,7 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   '<!doctype html>',
   '<html lang="en-AU">',
   '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-  '<meta name="theme-color" content="#365f43"><meta name="description" content="A private household recipe box.">',
+  '<meta name="theme-color" content="#365f43"><meta name="description" content="A private household recipe box."><link rel="icon" href="/favicon.svg" type="image/svg+xml">',
   '<title>Recipes — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css">',
   '</head>',
   '<body>',
@@ -217,16 +264,23 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
 
 const listRecipes = async (db: D1Database) => {
   const { results } = await db.prepare(
-    'SELECT id, source_site, source_url, title, subtitle, description, image_url FROM recipes WHERE status = ? ORDER BY title COLLATE NOCASE'
+    'SELECT id, source, source_url, title, subtitle, description, image_url, tags_json FROM recipes WHERE status = ? ORDER BY title COLLATE NOCASE'
   ).bind('ready').all<RecipeSummary>();
   return results;
 };
 
 const getRecipe = async (db: D1Database, id: string) => {
   const recipe = await db.prepare(
-    'SELECT id, source_site, source_url, title, subtitle, description, image_url, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, ingredients_json, steps_json FROM recipes WHERE id = ? AND status = ?'
+    'SELECT id, source, source_url, title, subtitle, description, image_url, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, tags_json, ingredients_json, steps_json FROM recipes WHERE id = ? AND status = ?'
   ).bind(id, 'ready').first<RecipeRow>();
   return recipe;
+};
+
+const listCooks = async (db: D1Database, recipeId: string) => {
+  const { results } = await db.prepare(
+    'SELECT id, cooked_at FROM recipe_cooks WHERE recipe_id = ? ORDER BY cooked_at DESC, id DESC LIMIT 5'
+  ).bind(recipeId).all<CookRecord>();
+  return results;
 };
 
 const importStatus = (candidate: ImportCandidate) =>
@@ -263,9 +317,9 @@ const saveRecipe = async (
 ) => {
   const status = importStatus(candidate);
   const result = await db.prepare([
-    'INSERT INTO recipes (id, source_site, source_id, source_url, title, subtitle, description, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, image_url, source_image_url, ingredients_json, steps_json, status, updated_at)',
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
-    'ON CONFLICT(id) DO UPDATE SET source_url = excluded.source_url, title = excluded.title, subtitle = excluded.subtitle, description = excluded.description, cook_time_from = excluded.cook_time_from, cook_time_to = excluded.cook_time_to, cook_time_unit = excluded.cook_time_unit, difficulty = excluded.difficulty, macros_json = excluded.macros_json, allergens_json = excluded.allergens_json, image_url = excluded.image_url, source_image_url = excluded.source_image_url, ingredients_json = excluded.ingredients_json, steps_json = excluded.steps_json, status = excluded.status, updated_at = CURRENT_TIMESTAMP'
+    'INSERT INTO recipes (id, source, source_id, source_url, title, subtitle, description, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, tags_json, image_url, source_image_url, ingredients_json, steps_json, status, updated_at)',
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+    'ON CONFLICT(id) DO UPDATE SET source_url = excluded.source_url, title = excluded.title, subtitle = excluded.subtitle, description = excluded.description, cook_time_from = excluded.cook_time_from, cook_time_to = excluded.cook_time_to, cook_time_unit = excluded.cook_time_unit, difficulty = excluded.difficulty, macros_json = excluded.macros_json, allergens_json = excluded.allergens_json, tags_json = excluded.tags_json, image_url = excluded.image_url, source_image_url = excluded.source_image_url, ingredients_json = excluded.ingredients_json, steps_json = excluded.steps_json, status = excluded.status, updated_at = CURRENT_TIMESTAMP'
   ].join(' ')).bind(
     candidate.source.site + ':' + candidate.source.id,
     candidate.source.site,
@@ -280,6 +334,7 @@ const saveRecipe = async (
     candidate.recipe.difficulty,
     JSON.stringify(candidate.recipe.macros),
     JSON.stringify(candidate.recipe.allergens),
+    JSON.stringify(candidate.recipe.tags),
     imageUrl,
     sourceImageUrl,
     JSON.stringify(candidate.recipe.ingredients),
@@ -307,7 +362,28 @@ app.get('/recipes/:recipeId', async (c) => {
   const recipeId = c.req.param('recipeId');
   if (!/^[a-z0-9-]+:\d+$/.test(recipeId)) return c.notFound();
   const recipe = await getRecipe(c.env.DB, recipeId);
-  return recipe ? c.html(recipeDetailPage(recipe)) : c.notFound();
+  return recipe ? c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id))) : c.notFound();
+});
+
+app.post('/recipes/:recipeId/cook', async (c) => {
+  const recipeId = c.req.param('recipeId');
+  if (!/^[a-z0-9-]+:\d+$/.test(recipeId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
+  const result = await c.env.DB.prepare(
+    'INSERT INTO recipe_cooks (recipe_id, cooked_at) VALUES (?, ?)'
+  ).bind(recipeId, new Date().toISOString()).run();
+  if (!result.success) return c.text('The cook could not be recorded.', 500);
+  return c.redirect('/recipes/' + encodeURIComponent(recipeId), 303);
+});
+
+app.post('/recipes/:recipeId/cooks/:cookId/delete', async (c) => {
+  const recipeId = c.req.param('recipeId');
+  const cookId = c.req.param('cookId');
+  if (!/^[a-z0-9-]+:\d+$/.test(recipeId) || !/^\d+$/.test(cookId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
+  const result = await c.env.DB.prepare(
+    'DELETE FROM recipe_cooks WHERE id = ? AND recipe_id = ?'
+  ).bind(cookId, recipeId).run();
+  if (!result.success) return c.text('The cook could not be removed.', 500);
+  return c.redirect('/recipes/' + encodeURIComponent(recipeId), 303);
 });
 
 app.get('/', async (c) => {
