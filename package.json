@@ -4,11 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "agent": "node scripts/train-smash-agent.mjs",
     "db:migrate:local": "WRANGLER_LOG_PATH=/tmp/meals-wrangler.log wrangler d1 migrations apply meals --local",
     "check": "WRANGLER_LOG_PATH=/tmp/meals-wrangler.log wrangler deploy --dry-run"
   },
   "dependencies": {
-    "hono": "^4.13.7"
+    "hono": "^4.13.7",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

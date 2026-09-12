@@ -7,8 +7,8 @@
     "description": {"type": "string"},
     "servings": {"type": "integer"},
     "minutes": {"type": "integer"},
-    "ingredients": {"type": "array", "items": {"type": "string"}},
-    "steps": {"type": "array", "items": {"type": "string"}},
+    "ingredients": {"type": "array", "description": "Ingredient names and amounts only; preparation and cooking instructions belong in steps.", "items": {"type": "string"}},
+    "steps": {"type": "array", "description": "Preparation and cooking instructions.", "items": {"type": "string"}},
     "notes": {"type": "string"}
   }
 }

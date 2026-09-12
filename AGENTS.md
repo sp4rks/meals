@@ -25,6 +25,21 @@ curl http://127.0.0.1:8787/health
 `npm run check` is a Wrangler deploy dry-run; it does not publish the Worker.
 Do not deploy or run remote D1/R2 commands unless explicitly requested.
 
+## Database migrations
+
+- Every new migration in `migrations/` must be applied and verified in both
+  local development D1 and production D1 before schema-dependent code is
+  considered complete.
+- For development, run `npm run db:migrate:local`, then confirm the expected
+  tables/columns with a local D1 readback.
+- For production, only after explicit production authorization, check pending
+  migrations with `npx wrangler d1 migrations list meals --remote`, apply them
+  with `npx wrangler d1 migrations apply meals --remote`, then rerun the list
+  and verify representative production SQL before deploying dependent code.
+- Never assume `wrangler deploy` applies migrations. If production access or
+  authorization is unavailable, leave the migration unapplied and report the
+  production step as outstanding rather than claiming completion.
+
 ## Runtime shape
 
 - `src/index.ts` is the Worker entry point and uses Hono.

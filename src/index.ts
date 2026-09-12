@@ -1,4 +1,5 @@
 import { validateSmashInput, validateSmashRecipe, type SmashRecipe } from './train-smash';
+import { MAX_BROWSER_MESSAGE_BYTES, MAX_INTERNAL_MESSAGE_BYTES, isUuid, parseBrowserCommand, parseOriginMessage, parseSnapshot, publicMessage, validateRevisionHistory, validateStoredSmashInput, type BrowserCommand, type OriginCommand, type OriginSnapshot, type StoredSmashInput } from './train-smash-protocol';
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import {
@@ -105,7 +106,7 @@ type AuthUser = {
 };
 
 type AppEnv = {
-  Bindings: Env & { TRAIN_SMASH_URL?: string; TRAIN_SMASH_TOKEN?: string };
+  Bindings: Env & { TRAIN_SMASH_URL?: string; TRAIN_SMASH_TOKEN?: string; CF_ACCESS_CLIENT_ID?: string; CF_ACCESS_CLIENT_SECRET?: string };
   Variables: { user: AuthUser | null };
 };
 
@@ -747,23 +748,92 @@ app.post('/settings', requireAuth, async (c) => {
   return c.redirect('/settings?saved=1', 303);
 });
 
-type SmashDraft = { id: string; input_json: string; recipe_json: string; created_at: string };
+type SmashDraft = { id: string; input_json: string; recipe_json: string; created_at: string; parent_id: string | null };
+type SmashRunView = { id: string; status: string };
 const smashPath = (id: string) => '/train-smash/' + encodeURIComponent(id);
-const smashPage = (user: AuthUser, drafts: SmashDraft[], draft?: SmashDraft, error = '', input = { ingredients: '', servings: 2, preferences: '' }, saved = false) => {
+const runPath = (id: string) => '/train-smash/runs/' + encodeURIComponent(id);
+const statusLabel = (status: string) => ({ accepted: 'Accepted — getting things ready…', running: 'Making something of it…', validating: 'Checking the recipe…', saving: 'Saving the recipe…', completed: 'Ready.', cancelled: 'Cancelled.', failed: 'The recipe agent could not finish.' }[status] || 'Working…');
+const smashPage = (user: AuthUser, drafts: SmashDraft[], draft?: SmashDraft, error = '', input: StoredSmashInput = { ingredients: '', servings: 2, preferences: '' }, saved = false, run?: SmashRunView) => {
   const recipe = draft ? validateSmashRecipe(JSON.parse(draft.recipe_json)) : null;
+  if (!run && draft) run = { id: draft.id, status: 'completed' };
+  const runPanel = run ? '<section class="card smash-progress" data-smash-run="' + escapeHtml(run.id) + '" data-smash-run-status="' + escapeHtml(run.status) + '" aria-labelledby="smash-progress-heading"><div class="row"><div><p class="eyebrow">Train Smash</p><h2 id="smash-progress-heading" data-smash-progress-label>' + escapeHtml(statusLabel(run.status)) + '</h2></div><span class="smash-elapsed" data-smash-elapsed>00 sec</span></div><p class="help" role="status" aria-live="polite" data-smash-progress-detail>Reconnects safely if you leave this page.</p><pre class="smash-terminal" data-smash-progress-log role="log" aria-label="Agent progress">' + (run.status === 'completed' ? '&gt; Recipe ready.' : '') + '</pre><div class="actions"><button class="button danger" type="button" data-smash-cancel ' + (['accepted', 'running', 'validating'].includes(run.status) ? '' : 'hidden') + '>Cancel</button><a class="button secondary" href="' + runPath(run.id) + '" data-smash-reconnect hidden>Reconnect</a></div></section>' : '';
+  const inputForm = !run || ['failed', 'cancelled'].includes(run.status) ? '<form class="card stack" action="/train-smash" method="post" data-smash-form><input type="hidden" name="requestId" value="' + crypto.randomUUID() + '"><div class="field"><label for="smash-ingredients">What have you got?</label><textarea id="smash-ingredients" name="ingredients" rows="5" maxlength="4000" required aria-describedby="smash-help" placeholder="2 eggs, half a zucchini, leftover rice, a handful of cheese…">' + escapeHtml(input.ingredients) + '</textarea><p class="help" id="smash-help">Include rough amounts and any basics you have, like oil, salt, or spices.</p></div><div class="field"><label for="smash-servings">How many are eating?</label><input id="smash-servings" name="servings" type="number" min="1" max="12" value="' + input.servings + '" required></div><div class="field"><label for="smash-preferences">Dietary needs or anything to avoid <span class="muted">(optional)</span></label><textarea id="smash-preferences" name="preferences" rows="2" maxlength="1000" placeholder="No nuts, vegetarian, keep it mild…">' + escapeHtml(input.preferences) + '</textarea></div><div class="actions"><button class="button" type="submit">Make something of it</button><p class="help" role="status" data-smash-status>We’ll suggest one recipe. Keep it only if you love it.</p></div></form>' : '';
+  const parentNote = draft?.parent_id ? '<p class="help">Revised from <a href="' + smashPath(draft.parent_id) + '">the original suggestion</a>.</p>' : '';
+  const revisionForm = recipe && draft ? '<form class="card stack" action="' + smashPath(draft.id) + '/revise" method="post" data-revision-form><h3>Try a revision</h3><p class="help">Keep the original recipe and ask for one bounded change. Dietary needs stay in force.</p><input type="hidden" name="requestId" value="' + crypto.randomUUID() + '"><div class="field"><label for="revision-instruction">What should change?</label><textarea id="revision-instruction" name="instruction" rows="3" maxlength="1000" required placeholder="Make it dairy-free"></textarea></div><button class="button secondary" type="submit">Revise this recipe</button></form>' : '';
   return [
-    '<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Train Smash — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css"></head><body><a class="skip-link" href="#main">Skip to content</a><div class="app-shell">',
+    '<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Train Smash — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css"><script src="/train-smash.js" defer></script></head><body><a class="skip-link" href="#main">Skip to content</a><div class="app-shell">',
     sidebar(user, 'train-smash'),
-    '<main id="main"><header class="topbar"><span class="breadcrumbs">Our household / Train Smash</span></header><section class="stack" aria-labelledby="smash-heading"><div><p class="eyebrow">A little mish mash. Something good.</p><h1 id="smash-heading">🚂 Train Smash</h1><p class="muted spaced">Odds, ends, and whatever’s in the fridge. Let’s make dinner out of it.</p></div>',
+    '<main id="main" data-smash-user-id="' + user.id + '"><header class="topbar"><span class="breadcrumbs">Our household / Train Smash</span></header><section class="stack" aria-labelledby="smash-heading"><div><p class="eyebrow">A little mish mash. Something good.</p><h1 id="smash-heading">🚂 Train Smash</h1><p class="muted spaced">Odds, ends, and whatever’s in the fridge. Let’s make dinner out of it.</p></div>',
     error ? '<p class="notice warning" role="alert">' + escapeHtml(error) + '</p>' : '',
-    '<form class="card stack" action="/train-smash" method="post" data-smash-form><div class="field"><label for="smash-ingredients">What have you got?</label><textarea id="smash-ingredients" name="ingredients" rows="5" maxlength="4000" required aria-describedby="smash-help" placeholder="2 eggs, half a zucchini, leftover rice, a handful of cheese…">' + escapeHtml(input.ingredients) + '</textarea><p class="help" id="smash-help">Include rough amounts and any basics you have, like oil, salt, or spices.</p></div><div class="field"><label for="smash-servings">How many are eating?</label><input id="smash-servings" name="servings" type="number" min="1" max="12" value="' + input.servings + '" required></div><div class="field"><label for="smash-preferences">Dietary needs or anything to avoid <span class="muted">(optional)</span></label><textarea id="smash-preferences" name="preferences" rows="2" maxlength="1000" placeholder="No nuts, vegetarian, keep it mild…">' + escapeHtml(input.preferences) + '</textarea></div><div class="actions"><button class="button" type="submit">Make something of it</button><p class="help" role="status" data-smash-status>We’ll suggest one recipe. Keep it only if you love it.</p></div></form>',
-    recipe && draft ? '<article class="card stack" aria-labelledby="suggestion-heading"><div><p class="eyebrow">AI-created · ' + (saved ? 'In your rotation' : 'Not yet in your rotation') + '</p><h2 id="suggestion-heading">' + escapeHtml(recipe.title) + '</h2><p class="spaced">' + escapeHtml(recipe.description) + '</p><p class="help">Serves ' + recipe.servings + ' · About ' + recipe.minutes + ' minutes</p></div><div class="recipe-detail-grid"><div><h3>Ingredients</h3><ul class="recipe-ingredients">' + recipe.ingredients.map((ingredient) => '<li>' + escapeHtml(ingredient) + '</li>').join('') + '</ul></div><div><h3>Let’s cook</h3><ol class="instructions">' + recipe.steps.map((step) => '<li><p>' + escapeHtml(step) + '</p></li>').join('') + '</ol></div></div><p class="notice">' + escapeHtml(recipe.notes) + '</p><p class="help">AI-created recipe. Check it makes sense for your ingredients and dietary needs before cooking.</p>' + (saved ? '<a class="button secondary" href="/recipes/train-smash:' + draft.id + '">In your rotation → View recipe</a>' : user.role === 'parent' ? '<form class="stack" action="' + smashPath(draft.id) + '/save" method="post"><label class="choice"><input type="checkbox" name="tried" value="yes" required><span>We tried it and liked it.</span></label><button class="button" type="submit">Add to rotation</button></form>' : '<p class="help">Liked it? Ask a parent to add it to the rotation.</p>') + '</article>' : '',
-    '<section class="card stack" aria-labelledby="recent-smashes"><h2 id="recent-smashes">Your recent smashes</h2><p class="help">Come back after dinner to save a keeper.</p>' + (drafts.length ? '<ul>' + drafts.map((item) => '<li><a href="' + smashPath(item.id) + '">' + escapeHtml(validateSmashRecipe(JSON.parse(item.recipe_json)).title) + '</a></li>').join('') + '</ul>' : '<p class="muted">Your first idea starts with what you’ve got.</p>') + '</section></section></main></div>',
-    '<script>document.querySelector("[data-smash-form]").addEventListener("submit",function(){this.querySelector("button").disabled=true;this.setAttribute("aria-busy","true");this.querySelector("[data-smash-status]").textContent="Making something of it… This can take a couple of minutes."});window.addEventListener("pageshow",function(){var f=document.querySelector("[data-smash-form]");f.querySelector("button").disabled=false;f.removeAttribute("aria-busy")});</script></body></html>'
+    runPanel,
+    inputForm,
+    recipe && draft ? '<div class="recipe-detail-grid"><article class="card recipe-steps-card stack" aria-labelledby="suggestion-heading"><div><p class="eyebrow">AI-created · ' + (saved ? 'In your rotation' : 'Not yet in your rotation') + '</p><h2 id="suggestion-heading">' + escapeHtml(recipe.title) + '</h2><p class="spaced">' + escapeHtml(recipe.description) + '</p><p class="help">Serves ' + recipe.servings + ' · About ' + recipe.minutes + ' minutes</p>' + parentNote + '</div><div class="section-heading"><h2>Recipe</h2><span class="badge success">' + recipe.steps.length + ' steps</span></div><ol class="instructions">' + recipe.steps.map((step) => '<li><p>' + escapeHtml(step) + '</p></li>').join('') + '</ol><p class="notice">' + escapeHtml(recipe.notes) + '</p><p class="help">AI-created recipe. Check it makes sense for your ingredients and dietary needs before cooking.</p>' + (saved ? '<a class="button secondary" href="/recipes/train-smash:' + draft.id + '">In your rotation → View recipe</a>' : user.role === 'parent' ? '<form class="stack" action="' + smashPath(draft.id) + '/save" method="post"><label class="choice"><input type="checkbox" name="tried" value="yes" required><span>We tried it and liked it.</span></label><button class="button" type="submit">Add to rotation</button></form>' : '<p class="help">Liked it? Ask a parent to add it to the rotation.</p>') + '</article><div class="recipe-detail-card"><div class="card recipe-detail-panel recipe-ingredients-section"><h2 id="suggestion-ingredients-heading">Ingredients</h2><ul class="recipe-ingredients">' + recipe.ingredients.map((ingredient, index) => '<li><label class="choice"><input type="checkbox" id="smash-ingredient-' + (index + 1) + '"><span>' + escapeHtml(ingredient) + '</span></label></li>').join('') + '</ul></div></div></div>' + revisionForm : '',
+    '<section class="card stack" aria-labelledby="recent-smashes"><h2 id="recent-smashes">Your recent smashes</h2><p class="help">Come back after dinner to save a keeper.</p>' + (drafts.length ? '<ul>' + drafts.map((item) => '<li><a href="' + smashPath(item.id) + '">' + escapeHtml(validateSmashRecipe(JSON.parse(item.recipe_json)).title) + '</a></li>').join('') + '</ul>' : '<p class="muted">Your first idea starts with what you’ve got.</p>') + '</section></section></main></div></body></html>'
   ].join('');
 };
-const listSmashes = async (db: D1Database, userId: number) => (await db.prepare('SELECT id, input_json, recipe_json, created_at FROM train_smashes WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 10').bind(userId).all<SmashDraft>()).results;
-const getSmash = async (db: D1Database, id: string, user: AuthUser) => db.prepare('SELECT id, input_json, recipe_json, created_at FROM train_smashes WHERE id = ? AND (user_id = ? OR ? = \'parent\')').bind(id, user.id, user.role).first<SmashDraft>();
+const listSmashes = async (db: D1Database, userId: number) => (await db.prepare('SELECT id, input_json, recipe_json, created_at, parent_id FROM train_smashes WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 10').bind(userId).all<SmashDraft>()).results;
+const getSmash = async (db: D1Database, id: string, user: AuthUser) => db.prepare('SELECT id, input_json, recipe_json, created_at, parent_id FROM train_smashes WHERE id = ? AND (user_id = ? OR ? = \'parent\')').bind(id, user.id, user.role).first<SmashDraft>();
+
+const agentBase = (env: AppEnv['Bindings']) => {
+  if (!env.TRAIN_SMASH_URL || !env.TRAIN_SMASH_TOKEN) throw Object.assign(new Error('Agent unavailable'), { code: 'agent_unavailable' });
+  const base = new URL(env.TRAIN_SMASH_URL);
+  const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(base.hostname);
+  if (base.protocol !== 'https:' && !(base.protocol === 'http:' && loopback)) throw Object.assign(new Error('Agent URL must be HTTPS.'), { code: 'agent_unavailable' });
+  if (!base.pathname.endsWith('/generate')) throw Object.assign(new Error('Agent URL must end in /generate.'), { code: 'agent_unavailable' });
+  if (!!env.CF_ACCESS_CLIENT_ID !== !!env.CF_ACCESS_CLIENT_SECRET) throw Object.assign(new Error('Access credentials are incomplete.'), { code: 'agent_unavailable' });
+  return base;
+};
+const agentEndpoint = (env: AppEnv['Bindings'], suffix: string) => {
+  const base = agentBase(env);
+  const prefix = base.pathname.slice(0, -'/generate'.length);
+  base.pathname = prefix + suffix;
+  base.search = '';
+  base.hash = '';
+  return base;
+};
+const agentHeaders = (env: AppEnv['Bindings'], userId: number) => {
+  const headers = new Headers({ Authorization: 'Bearer ' + env.TRAIN_SMASH_TOKEN, 'X-Meals-User-Id': String(userId), 'Content-Type': 'application/json' });
+  if (env.CF_ACCESS_CLIENT_ID) headers.set('CF-Access-Client-Id', env.CF_ACCESS_CLIENT_ID);
+  if (env.CF_ACCESS_CLIENT_SECRET) headers.set('CF-Access-Client-Secret', env.CF_ACCESS_CLIENT_SECRET);
+  return headers;
+};
+const agentJson = async (response: Response) => {
+  const body = await response.arrayBuffer();
+  if (body.byteLength > MAX_INTERNAL_MESSAGE_BYTES) throw new Error('Agent response too large.');
+  return JSON.parse(new TextDecoder().decode(body));
+};
+const fixedAgentCode = (value: unknown) => ['busy', 'forbidden', 'request_conflict', 'not_found', 'cancelled', 'timeout', 'interrupted', 'agent_unavailable', 'invalid_recipe', 'save_failed'].includes(value) ? value as Parameters<typeof publicMessage>[0] : 'agent_unavailable';
+const callAgent = async (env: AppEnv['Bindings'], userId: number, command: OriginCommand) => {
+  const response = await fetch(agentEndpoint(env, '/generate'), { method: 'POST', headers: agentHeaders(env, userId), body: JSON.stringify(command), redirect: 'manual', signal: AbortSignal.timeout(160000) });
+  const payload = await agentJson(response);
+  if (!response.ok) throw Object.assign(new Error('Agent request failed.'), { code: fixedAgentCode(payload.error), snapshot: payload.snapshot });
+  return parseSnapshot(payload);
+};
+const buildRevisionCommand = async (db: D1Database, user: AuthUser, command: Extract<BrowserCommand, { type: 'revise' }>): Promise<OriginCommand> => {
+  const draft = await getSmash(db, command.draftId, user);
+  if (!draft) throw Object.assign(new Error('Draft not found.'), { code: 'not_found' });
+  const input = validateStoredSmashInput(JSON.parse(draft.input_json));
+  const previousRecipe = validateSmashRecipe(JSON.parse(draft.recipe_json));
+  const revisions = validateRevisionHistory(input.revisions || []);
+  if (revisions.length >= 10) throw Object.assign(new Error('Revision limit reached.'), { code: 'request_conflict' });
+  const nextRevisions = [...revisions, command.instruction];
+  return { v: 1, type: 'revise', requestId: command.requestId, parentId: draft.id, previousRecipe, revisions: nextRevisions, input: { ingredients: input.ingredients, servings: input.servings, preferences: input.preferences, revisions: nextRevisions } };
+};
+const persistSmashCompletion = async (db: D1Database, user: AuthUser, snapshot: OriginSnapshot) => {
+  if (snapshot.status !== 'completed' || !snapshot.recipe) throw new Error('Not a completed recipe.');
+  const input = validateStoredSmashInput(snapshot.input);
+  const recipe = validateSmashRecipe(snapshot.recipe);
+  if (recipe.servings !== input.servings) throw new Error('Recipe servings did not match.');
+  if (snapshot.parentId && !await getSmash(db, snapshot.parentId, user)) throw Object.assign(new Error('Parent draft not found.'), { code: 'forbidden' });
+  const result = await db.prepare([
+    'INSERT INTO train_smashes (id, user_id, input_json, recipe_json, parent_id) VALUES (?, ?, ?, ?, ?)',
+    'ON CONFLICT(id) DO NOTHING'
+  ].join(' ')).bind(snapshot.runId, user.id, JSON.stringify(input), JSON.stringify(recipe), snapshot.parentId || null).run();
+  if (!result.success) throw Object.assign(new Error('D1 save failed.'), { code: 'save_failed' });
+  const saved = await db.prepare('SELECT id, user_id FROM train_smashes WHERE id = ?').bind(snapshot.runId).first<{ id: string; user_id: number }>();
+  if (!saved || saved.user_id !== user.id) throw Object.assign(new Error('Draft owner mismatch.'), { code: 'forbidden' });
+  return saved.id;
+};
 
 app.use('/train-smash*', requireAuth, async (c, next) => {
   c.header('Cache-Control', 'no-store');
@@ -778,33 +848,126 @@ app.post('/train-smash', async (c) => {
   let input;
   try { input = validateSmashInput(rawInput); }
   catch (error) { return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, (error as Error).message, { ...rawInput, servings: Number.isFinite(rawInput.servings) ? rawInput.servings : 2 }), 400); }
-  let recipe: SmashRecipe;
+  const requestId = formString(body.requestId);
+  if (!isUuid(requestId)) return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, 'Please try the generation again.', input), 400);
   try {
-    if (!c.env.TRAIN_SMASH_URL || !c.env.TRAIN_SMASH_TOKEN) throw new Error('The recipe agent is unavailable. Please try again shortly.');
-    const response = await fetch(c.env.TRAIN_SMASH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.env.TRAIN_SMASH_TOKEN }, body: JSON.stringify(input), signal: AbortSignal.timeout(160000) });
-    if (response.status === 429) throw new Error('Another recipe is cooking up. Try again in a moment.');
-    if (!response.ok) throw new Error('The recipe agent could not finish. Please try again.');
-    recipe = validateSmashRecipe(await response.json());
-    if (recipe.servings !== input.servings) throw new Error('The recipe servings did not match. Please try again.');
+    const snapshot = await callAgent(c.env, user.id, { v: 1, type: 'generate', requestId, input });
+    await persistSmashCompletion(c.env.DB, user, snapshot);
+    return c.redirect(smashPath(snapshot.runId), 303);
   } catch (error) {
-    const message = error instanceof Error && !['TypeError', 'TimeoutError', 'AbortError'].includes(error.name) ? error.message : 'The recipe agent could not finish. Please try again.';
-    return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, message, input), 503);
+    const code = fixedAgentCode(error?.code || (error?.snapshot && error.snapshot.errorCode));
+    const run = error?.snapshot && isUuid(error.snapshot.runId) ? { id: error.snapshot.runId, status: error.snapshot.status || 'failed' } : undefined;
+    return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, publicMessage(code), input, false, run), code === 'busy' ? 429 : 503);
   }
-  const id = crypto.randomUUID();
-  await c.env.DB.prepare('INSERT INTO train_smashes (id, user_id, input_json, recipe_json) VALUES (?, ?, ?, ?)').bind(id, user.id, JSON.stringify(input), JSON.stringify(recipe)).run();
-  return c.redirect(smashPath(id), 303);
+});
+app.get('/train-smash/socket', async (c) => {
+  const user = c.get('user')!;
+  if (c.req.header('Origin') !== new URL(c.req.url).origin || c.req.header('Upgrade')?.toLowerCase() !== 'websocket') return c.text('WebSocket upgrade required.', 403);
+  const pair = new WebSocketPair();
+  const browser = pair[0];
+  const server = pair[1];
+  server.accept({ allowHalfOpen: true });
+  const bridge = async () => {
+    let origin: WebSocket | null = null;
+    let originOpen = false;
+    const pending: string[] = [];
+    let closed = false;
+    const send = (value: unknown) => { if (!closed && server.readyState === 1) server.send(JSON.stringify(value)); };
+    const close = () => { if (closed) return; closed = true; origin?.close(1000, 'Bridge closed'); server.close(1000, 'Bridge closed'); };
+    const forward = (value: OriginCommand) => { if (closed) return; const payload = JSON.stringify(value); if (originOpen) origin!.send(payload); else pending.push(payload); };
+    server.addEventListener('close', close);
+    server.addEventListener('message', (event) => {
+      void (async () => {
+        if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).byteLength > MAX_BROWSER_MESSAGE_BYTES) { server.close(1009, 'Message too large'); return; }
+        const freshUser = await currentUser(c.req.raw, c.env.DB);
+        if (!freshUser || freshUser.id !== user.id) { send({ v: 1, type: 'error', code: 'forbidden', message: publicMessage('forbidden') }); close(); return; }
+        const command = parseBrowserCommand(JSON.parse(event.data));
+        if (command.type === 'generate') forward(command);
+        else if (command.type === 'revise') forward(await buildRevisionCommand(c.env.DB, user, command));
+        else forward(command);
+      })().catch((error) => send({ v: 1, type: 'error', code: fixedAgentCode(error?.code), message: publicMessage(fixedAgentCode(error?.code)), requestId: error?.requestId }));
+    });
+    try {
+      const response = await fetch(new Request(agentEndpoint(c.env, '/events'), { headers: { ...Object.fromEntries(agentHeaders(c.env, user.id)), Upgrade: 'websocket' }, redirect: 'manual' }));
+      if (response.status !== 101 || !response.webSocket) throw new Error('Agent socket unavailable.');
+      if (closed) { response.webSocket.close(1000, 'Bridge closed'); return; }
+      origin = response.webSocket;
+      origin.accept({ allowHalfOpen: true });
+      const flush = () => { originOpen = true; while (pending.length) origin!.send(pending.shift()!); };
+      origin.addEventListener('open', flush);
+      if (origin.readyState === 1) flush();
+      origin.addEventListener('message', (event) => {
+        void (async () => {
+          const message = parseOriginMessage(typeof event.data === 'string' ? JSON.parse(event.data) : JSON.parse(new TextDecoder().decode(event.data)));
+          if (message.type === 'error') { send(message); return; }
+          const snapshot = message;
+          if (snapshot.status !== 'completed') { send(snapshot); return; }
+          send({ ...snapshot, status: 'saving' });
+          try {
+            const draftId = await persistSmashCompletion(c.env.DB, user, snapshot);
+            send({ ...snapshot, status: 'completed', draftId, draftUrl: smashPath(draftId) });
+          } catch {
+            send({ ...snapshot, status: 'failed', errorCode: 'save_failed', message: publicMessage('save_failed') });
+          }
+        })().catch(() => send({ v: 1, type: 'error', code: 'invalid_recipe', message: publicMessage('invalid_recipe') }));
+      });
+      origin.addEventListener('close', close);
+      origin.addEventListener('error', close);
+    } catch { send({ v: 1, type: 'error', code: 'agent_unavailable', message: publicMessage('agent_unavailable') }); close(); return; }
+  };
+  c.executionCtx.waitUntil(bridge());
+  return new Response(null, { status: 101, webSocket: browser });
+});
+app.get('/train-smash/runs/:runId', async (c) => {
+  const user = c.get('user')!;
+  const runId = c.req.param('runId');
+  if (!isUuid(runId)) return c.notFound();
+  try {
+    const response = await fetch(agentEndpoint(c.env, '/runs/' + encodeURIComponent(runId)), { headers: agentHeaders(c.env, user.id), redirect: 'manual' });
+    if (response.status === 404) return c.notFound();
+    if (!response.ok) throw new Error('Agent unavailable.');
+    const snapshot = parseSnapshot(await agentJson(response));
+    if (snapshot.status === 'completed') {
+      const draftId = await persistSmashCompletion(c.env.DB, user, snapshot);
+      return c.redirect(smashPath(draftId), 303);
+    }
+    return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, snapshot.errorCode ? publicMessage(snapshot.errorCode) : '', snapshot.input, false, { id: snapshot.runId, status: snapshot.status }), 200);
+  } catch (error) {
+    const code = fixedAgentCode(error?.code);
+    return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, publicMessage(code), { ingredients: '', servings: 2, preferences: '' }, false, { id: runId, status: 'failed' }), 503);
+  }
+});
+app.post('/train-smash/:id/revise', async (c) => {
+  const user = c.get('user')!;
+  const body = await c.req.parseBody();
+  const draft = await getSmash(c.env.DB, c.req.param('id'), user);
+  if (!draft) return c.notFound();
+  const input = validateStoredSmashInput(JSON.parse(draft.input_json));
+  const instruction = formString(body.instruction);
+  const requestId = formString(body.requestId);
+  if (!isUuid(requestId) || !instruction || instruction.length > 1000) return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, 'Add one revision instruction (up to 1,000 characters).', input), 400);
+  try {
+    const snapshot = await callAgent(c.env, user.id, await buildRevisionCommand(c.env.DB, user, { v: 1, type: 'revise', requestId, draftId: draft.id, instruction }));
+    await persistSmashCompletion(c.env.DB, user, snapshot);
+    return c.redirect(smashPath(snapshot.runId), 303);
+  } catch (error) {
+    const code = fixedAgentCode(error?.code || (error?.snapshot && error.snapshot.errorCode));
+    const run = error?.snapshot && isUuid(error.snapshot.runId) ? { id: error.snapshot.runId, status: error.snapshot.status || 'failed' } : undefined;
+    return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, publicMessage(code), input, false, run), code === 'busy' ? 429 : 503);
+  }
 });
 app.get('/train-smash/:id', async (c) => {
   const user = c.get('user')!;
   const draft = await getSmash(c.env.DB, c.req.param('id'), user);
   if (!draft) return c.notFound();
-  return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, '', JSON.parse(draft.input_json), !!(await getRecipe(c.env.DB, 'train-smash:' + draft.id))));
+  return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, '', validateStoredSmashInput(JSON.parse(draft.input_json)), !!(await getRecipe(c.env.DB, 'train-smash:' + draft.id))));
 });
 app.post('/train-smash/:id/save', requireParent, async (c) => {
   const user = c.get('user')!;
   const draft = await getSmash(c.env.DB, c.req.param('id'), user);
   if (!draft) return c.notFound();
-  if ((await c.req.parseBody()).tried !== 'yes') return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, 'Try it first, then tick the box if you liked it.', JSON.parse(draft.input_json)), 400);
+  const input = validateStoredSmashInput(JSON.parse(draft.input_json));
+  if ((await c.req.parseBody()).tried !== 'yes') return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, 'Try it first, then tick the box if you liked it.', input), 400);
   const recipe = validateSmashRecipe(JSON.parse(draft.recipe_json));
   await saveRecipe(c.env.DB, {
     source: { site: 'train-smash', id: draft.id, url: smashPath(draft.id), retrievedAt: draft.created_at },

@@ -1,0 +1,16 @@
+[Unit]
+Description=Meals Train Smash recipe agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sparks/projects/meals
+EnvironmentFile=/home/sparks/.config/meals/train-smash.env
+ExecStart=/home/sparks/.local/node-v24.11.0-linux-x64/bin/node /home/sparks/projects/meals/scripts/train-smash-agent.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
