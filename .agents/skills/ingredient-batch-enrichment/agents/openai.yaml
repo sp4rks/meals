@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ingredient Batch Enrichment"
+  short_description: "Verify and enrich new ingredient rows"
+  default_prompt: "Use $ingredient-batch-enrichment to verify and enrich the new ingredient rows locally."

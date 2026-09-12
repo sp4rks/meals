@@ -1,0 +1,3 @@
+interface:
+  display_name: "One tsp Import"
+  short_description: "Import private One tsp recipe exports"

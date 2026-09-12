@@ -48,6 +48,19 @@ type CookRecord = {
   cooked_at: string;
 };
 
+type IngredientRow = {
+  id: number;
+  name: string;
+  category: string | null;
+  default_unit: string | null;
+  storage_location: 'pantry' | 'refrigerator' | 'freezer' | null;
+  storage_notes: string;
+  enrichment_status: 'pending' | 'complete' | 'needs_review' | 'failed';
+  enrichment_notes: string;
+  enriched_at: string | null;
+  review_feedback: string;
+};
+
 type ImportCandidate = {
   source: {
     site: string;
@@ -89,6 +102,35 @@ const escapeHtml = (value: string) =>
   })[character] || character);
 
 const recipePath = (recipe: RecipeSummary) => '/recipes/' + encodeURIComponent(recipe.id);
+
+const normalizeIngredientName = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
+
+const formString = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+
+const reviewStorage = (value: unknown) => value === 'pantry' || value === 'refrigerator' || value === 'freezer' ? value : null;
+
+const reviewStatus = (value: unknown): IngredientRow['enrichment_status'] | null => value === 'pending' || value === 'complete' || value === 'needs_review' || value === 'failed' ? value : null;
+
+const formatEnrichmentStatus = (value: IngredientRow['enrichment_status']) => ({
+  pending: ['Pending', 'warning'],
+  complete: ['Complete', 'success'],
+  needs_review: ['Needs review', 'warning'],
+  failed: ['Failed', 'error']
+} as const)[value] || ['Unknown', 'warning'];
+
+const ingredientTriggerData = (ingredient: IngredientRow) =>
+  ' data-ingredient-review data-id="' + ingredient.id + '" data-status="' + ingredient.enrichment_status + '" data-name="' + escapeHtml(ingredient.name) + '" data-category="' + escapeHtml(ingredient.category || '') + '" data-unit="' + escapeHtml(ingredient.default_unit || '') + '" data-storage-location="' + escapeHtml(ingredient.storage_location || '') + '" data-storage-notes="' + escapeHtml(ingredient.storage_notes) + '" data-review-feedback="' + escapeHtml(ingredient.review_feedback) + '" data-question="' + escapeHtml(ingredient.enrichment_notes) + '"';
+
+const ingredientTable = (ingredients: IngredientRow[]) => ingredients.length
+  ? '<div class="card"><div class="table-wrap"><table><caption class="sr-only">Ingredient catalogue</caption><thead><tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Unit</th><th scope="col">Storage</th><th scope="col">Enrichment</th><th scope="col">Actions</th></tr></thead><tbody>' + ingredients.map((ingredient) => {
+      const [status, badge] = formatEnrichmentStatus(ingredient.enrichment_status);
+      const enrichment = ingredient.enrichment_status === 'needs_review'
+        ? '<button class="ingredient-review-trigger help" type="button"' + ingredientTriggerData(ingredient) + '>' + escapeHtml(ingredient.enrichment_notes || 'Review ingredient') + '</button>'
+        : '<span class="badge ' + badge + '">' + status + '</span>';
+      const edit = '<button class="button quiet" type="button"' + ingredientTriggerData(ingredient) + ' aria-label="Edit ' + escapeHtml(ingredient.name) + '">Edit</button>';
+      return '<tr><td data-label="Name"><strong>' + escapeHtml(ingredient.name) + '</strong></td><td data-label="Category">' + escapeHtml(ingredient.category || '—') + '</td><td data-label="Unit">' + escapeHtml(ingredient.default_unit || '—') + '</td><td data-label="Storage">' + escapeHtml(ingredient.storage_location || '—') + '</td><td data-label="Enrichment">' + enrichment + '</td><td class="ingredient-table-actions" data-label="Actions">' + edit + '</td></tr>';
+    }).join('') + '</tbody></table></div></div>'
+  : '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌁</span><h2>No ingredients yet</h2><p>Ingredients will appear here when recipes are imported.</p></div>';
 
 const recipeCard = (recipe: RecipeSummary) => [
   '<article class="card recipe-card">',
@@ -176,7 +218,7 @@ const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[]) => {
     '<a class="skip-link" href="#main">Skip to content</a>',
     '<div class="app-shell">',
     '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
-    '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">▤</span> Recipes</a></nav>',
+    '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a></nav>',
     '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
     '<main id="main">',
     '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li><a href="/">Recipes</a></li><li>' + escapeHtml(recipe.title) + '</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
@@ -252,7 +294,7 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   '<a class="skip-link" href="#main">Skip to content</a>',
   '<div class="app-shell">',
   '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
-  '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">▤</span> Recipes</a></nav>',
+  '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a></nav>',
   '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
   '<main id="main">',
   '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Recipes</li></ol></nav><label class="mode-toggle toggle"><span>Adult</span><input type="checkbox" role="switch" data-kid-mode aria-controls="recipe-results" aria-label="Kid mode"><span>Kid</span></label></header>',
@@ -283,13 +325,13 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   'const recipeResults = document.getElementById("recipe-results");',
   'manageButton?.addEventListener("click", () => { const managing = manageButton.getAttribute("aria-pressed") !== "true"; manageButton.setAttribute("aria-pressed", String(managing)); recipeResults?.querySelectorAll(".recipe-delete-form").forEach((form) => { form.hidden = !managing; }); });',
   'recipeResults?.addEventListener("submit", (event) => { if (event.target instanceof HTMLFormElement && event.target.classList.contains("recipe-delete-form") && !window.confirm("Delete this recipe?")) event.preventDefault(); });',
-  'const recipeCards = document.querySelectorAll(".recipe-card");',
+  'const recipeCards = [...document.querySelectorAll(".recipe-card")];',
   'const randomTilt = (range) => Math.random() * range * 2 - range;',
   'const setCardTilt = (card, degrees) => { card.style.setProperty("--recipe-base-tilt", `${degrees}deg`); card.style.setProperty("--recipe-tilt", `${degrees}deg`); };',
   'let kidMode = false;',
   'recipeCards.forEach((card) => { card.addEventListener("mouseenter", () => { if (!kidMode) return; const base = Number.parseFloat(card.style.getPropertyValue("--recipe-base-tilt")) || 0; card.style.setProperty("--recipe-tilt", `${base + randomTilt(7)}deg`); }); card.addEventListener("mouseleave", () => card.style.setProperty("--recipe-tilt", card.style.getPropertyValue("--recipe-base-tilt") || "0deg")); });',
   'const kidSwitch = document.querySelector("[data-kid-mode]");',
-  'kidSwitch?.addEventListener("change", () => { kidMode = kidSwitch.checked; recipeCards.forEach((card) => setCardTilt(card, kidMode ? randomTilt(15) : 0)); });',
+  'kidSwitch?.addEventListener("change", () => { kidMode = kidSwitch.checked; const positions = new Map(recipeCards.map((card) => [card, card.getBoundingClientRect()])); const order = kidMode ? [...recipeCards].sort(() => Math.random() - .5) : recipeCards; if (kidMode && order.length > 1 && order.every((card, index) => card === recipeCards[index])) order.push(order.shift()); order.forEach((card) => card.parentElement?.append(card)); recipeCards.forEach((card) => { const before = positions.get(card); const after = card.getBoundingClientRect(); card.classList.remove("is-mixing", "is-straightening"); card.style.setProperty("--mix-start-x", `${before.left - after.left}px`); card.style.setProperty("--mix-start-y", `${before.top - after.top}px`); if (kidMode) { for (let step = 1; step <= 4; step++) { const suffix = step === 1 ? "" : `-${step}`; card.style.setProperty(`--mix-x${suffix}`, `${randomTilt(180)}px`); card.style.setProperty(`--mix-y${suffix}`, `${randomTilt(140)}px`); card.style.setProperty(`--mix-turn${suffix}`, `${randomTilt(540)}deg`); } setCardTilt(card, randomTilt(15)); card.classList.add("is-mixing"); } else { card.style.setProperty("--recipe-start-tilt", card.style.getPropertyValue("--recipe-tilt") || "0deg"); setCardTilt(card, 0); card.classList.add("is-straightening"); } card.addEventListener("animationend", () => card.classList.remove("is-mixing", "is-straightening"), { once: true }); }); });',
   '</script>',
   '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
   '</main></div></body></html>'
@@ -299,6 +341,64 @@ const listRecipes = async (db: D1Database) => {
   const { results } = await db.prepare(
     'SELECT id, source, source_url, title, subtitle, description, image_url, tags_json FROM recipes WHERE status = ? ORDER BY title COLLATE NOCASE'
   ).bind('ready').all<RecipeSummary>();
+  return results;
+};
+
+const ingredientReviewDialog = () => [
+  '<dialog class="ingredient-review-dialog" id="ingredient-review-dialog" aria-labelledby="ingredient-review-heading" aria-describedby="ingredient-review-question">',
+  '<form class="card stack" method="post">',
+  '<div class="section-heading"><div><p class="eyebrow" data-ingredient-review-eyebrow>Needs review</p><h2 id="ingredient-review-heading">Review ingredient</h2><p class="muted" id="ingredient-review-question"></p></div><button class="button quiet icon" type="button" data-close-ingredient-review aria-label="Close ingredient review">×</button></div>',
+  '<div class="form-grid">',
+  '<div class="field full"><label for="ingredient-review-name">Name</label><input id="ingredient-review-name" name="name" required></div>',
+  '<div class="field"><label for="ingredient-review-category">Category</label><select id="ingredient-review-category" name="category"><option value="">Unknown</option><option>fruit</option><option>vegetable</option><option>meat</option><option>poultry</option><option>fish</option><option>seafood</option><option>dairy</option><option>egg</option><option>grain</option><option>herb</option><option>spice</option><option>staple</option><option>condiment</option><option>prepared</option></select></div>',
+  '<div class="field"><label for="ingredient-review-unit">Unit</label><select id="ingredient-review-unit" name="default_unit"><option value="">Unknown</option><option>g</option><option>kg</option><option>mL</option><option>L</option><option>whole</option><option>bunch</option><option>packet</option><option>cube</option></select></div>',
+  '<div class="field"><label for="ingredient-review-storage-location">Storage</label><select id="ingredient-review-storage-location" name="storage_location"><option value="">Unknown</option><option value="pantry">Pantry</option><option value="refrigerator">Refrigerator</option><option value="freezer">Freezer</option></select></div>',
+  '<div class="field"><label for="ingredient-review-status">Status</label><select id="ingredient-review-status" name="status" required><option value="pending">Pending</option><option value="complete">Complete</option><option value="needs_review">Needs review</option><option value="failed">Failed</option></select></div>',
+  '<div class="field full"><label for="ingredient-review-storage-notes">Storage notes</label><textarea id="ingredient-review-storage-notes" name="storage_notes" rows="2" placeholder="Optional details, such as refrigerate after opening"></textarea></div>',
+  '<div class="field full"><label for="ingredient-review-feedback">Feedback</label><textarea id="ingredient-review-feedback" name="review_feedback" rows="3" placeholder="What should the catalogue or AI know?"></textarea></div>',
+  '</div>',
+  '<div class="actions"><button class="button secondary" type="button" data-close-ingredient-review>Cancel</button><button class="button" type="submit" data-ingredient-review-submit>Save</button><button class="button danger" type="submit" formnovalidate data-delete-ingredient>Delete</button></div>',
+  '</form>',
+  '</dialog>',
+  '<script>',
+  'const ingredientReviewDialog = document.getElementById("ingredient-review-dialog");',
+  'const ingredientReviewForm = ingredientReviewDialog?.querySelector("form");',
+  'ingredientReviewForm?.addEventListener("submit", (event) => { if (!(event.submitter instanceof HTMLButtonElement) || !event.submitter.hasAttribute("data-delete-ingredient")) return; event.preventDefault(); if (!window.confirm("Delete " + (event.submitter.dataset.name || "this ingredient") + "?")) return; if (ingredientReviewForm instanceof HTMLFormElement) { ingredientReviewForm.action = "/ingredients/" + event.submitter.dataset.id + "/delete"; ingredientReviewForm.submit(); } });',
+  'const setIngredientReviewValue = (selector, value) => { const field = ingredientReviewDialog?.querySelector(selector); if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement) field.value = value || ""; };',
+  'document.querySelectorAll("[data-ingredient-review]").forEach((button) => button.addEventListener("click", () => { if (!(button instanceof HTMLElement)) return; const reviewing = button.dataset.status === "needs_review"; const eyebrow = ingredientReviewDialog?.querySelector("[data-ingredient-review-eyebrow]"); const heading = ingredientReviewDialog?.querySelector("#ingredient-review-heading"); const deleteButton = ingredientReviewDialog?.querySelector("[data-delete-ingredient]"); if (eyebrow) eyebrow.textContent = reviewing ? "Needs review" : "Edit ingredient"; if (heading) heading.textContent = reviewing ? "Review ingredient" : "Edit ingredient"; if (deleteButton instanceof HTMLButtonElement) { deleteButton.dataset.id = button.dataset.id || ""; deleteButton.dataset.name = button.dataset.name || "this ingredient"; } if (ingredientReviewForm instanceof HTMLFormElement) ingredientReviewForm.action = "/ingredients/" + button.dataset.id + "/review"; const question = ingredientReviewDialog?.querySelector("#ingredient-review-question"); if (question) question.textContent = reviewing ? (button.dataset.question || "Add the missing ingredient details.") : "Update the shared ingredient details."; setIngredientReviewValue("#ingredient-review-name", button.dataset.name); setIngredientReviewValue("#ingredient-review-category", button.dataset.category); setIngredientReviewValue("#ingredient-review-unit", button.dataset.unit); setIngredientReviewValue("#ingredient-review-storage-location", button.dataset.storageLocation); setIngredientReviewValue("#ingredient-review-status", button.dataset.status); setIngredientReviewValue("#ingredient-review-storage-notes", button.dataset.storageNotes); setIngredientReviewValue("#ingredient-review-feedback", button.dataset.reviewFeedback); ingredientReviewDialog?.showModal(); }));',
+  'document.querySelectorAll("[data-close-ingredient-review]").forEach((button) => button.addEventListener("click", () => ingredientReviewDialog?.close()));',
+  '</script>'
+].join('');
+
+const ingredientsPage = (ingredients: IngredientRow[], flash?: Flash) => [
+  '<!doctype html>',
+  '<html lang="en-AU">',
+  '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+  '<meta name="theme-color" content="#365f43"><meta name="description" content="The shared ingredient catalogue for a private household recipe box."><link rel="icon" href="/favicon.svg" type="image/svg+xml">',
+  '<title>Ingredients — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css">',
+  '</head>',
+  '<body>',
+  '<a class="skip-link" href="#main">Skip to content</a>',
+  '<div class="app-shell">',
+  '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
+  '<nav aria-label="Main navigation" class="nav-links"><a href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a class="active" href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a></nav>',
+  '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
+  '<main id="main">',
+  '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Ingredients</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
+  flash ? '<div class="toast ' + (flash.kind === 'error' ? 'error' : '') + '" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>' : '',
+  '<section aria-labelledby="ingredients-heading"><p class="eyebrow">Ingredient catalogue</p>',
+  '<div class="section-heading"><div><h1 id="ingredients-heading">The things we cook with.</h1><p class="muted">Shared ingredients across the recipe box.</p></div></div>',
+  ingredientTable(ingredients),
+  '</section>',
+  ingredientReviewDialog(),
+  '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
+  '</main></div></body></html>'
+].join('');
+
+const listIngredients = async (db: D1Database) => {
+  const { results } = await db.prepare(
+    'SELECT id, name, category, default_unit, storage_location, storage_notes, enrichment_status, enrichment_notes, enriched_at, review_feedback FROM ingredients ORDER BY name COLLATE NOCASE'
+  ).all<IngredientRow>();
   return results;
 };
 
@@ -389,6 +489,84 @@ app.get('/media/*', async (c) => {
   object.writeHttpMetadata(headers);
   headers.set('etag', object.httpEtag);
   return new Response(object.body, { headers });
+});
+
+app.get('/ingredients', async (c) => c.html(ingredientsPage(
+  await listIngredients(c.env.DB),
+  c.req.query('reviewed')
+    ? { kind: 'success', message: 'Ingredient updated.' }
+    : c.req.query('updated')
+      ? { kind: 'success', message: 'Ingredient updated.' }
+      : c.req.query('deleted') ? { kind: 'success', message: 'Ingredient deleted.' } : undefined
+)));
+
+app.post('/ingredients/:ingredientId/review', async (c) => {
+  const ingredientId = c.req.param('ingredientId');
+  if (!/^\d+$/.test(ingredientId)) return c.notFound();
+  const ingredient = await c.env.DB.prepare(
+    'SELECT id, enrichment_status FROM ingredients WHERE id = ?'
+  ).bind(ingredientId).first<{ id: number; enrichment_status: IngredientRow['enrichment_status'] }>();
+  if (!ingredient) return c.notFound();
+
+  const body = await c.req.parseBody();
+  const name = formString(body.name);
+  const normalizedName = normalizeIngredientName(name);
+  const status = reviewStatus(body.status);
+  if (!normalizedName) {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+      kind: 'error',
+      message: 'Ingredient name is required.'
+    }), 400);
+  }
+  if (!status) {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+      kind: 'error',
+      message: 'Choose a valid ingredient status.'
+    }), 400);
+  }
+
+  const duplicate = await c.env.DB.prepare(
+    'SELECT id FROM ingredients WHERE normalized_name = ? AND id != ?'
+  ).bind(normalizedName, ingredientId).first<{ id: number }>();
+  if (duplicate) {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+      kind: 'error',
+      message: 'An ingredient with that name already exists.'
+    }), 400);
+  }
+
+  const result = await c.env.DB.prepare([
+    "UPDATE ingredients SET name = ?, normalized_name = ?, category = ?, default_unit = ?, storage_location = ?, storage_notes = ?, review_feedback = ?, enrichment_status = ?, enrichment_notes = CASE WHEN ? = 'needs_review' THEN enrichment_notes ELSE '' END, enriched_at = CASE WHEN ? = 'complete' THEN CURRENT_TIMESTAMP ELSE enriched_at END, updated_at = CURRENT_TIMESTAMP",
+    'WHERE id = ?'
+  ].join(' ')).bind(
+    name,
+    normalizedName,
+    formString(body.category) || null,
+    formString(body.default_unit) || null,
+    reviewStorage(body.storage_location),
+    formString(body.storage_notes),
+    formString(body.review_feedback),
+    status,
+    status,
+    status,
+    ingredientId
+  ).run();
+  if (!result.success) return c.text('The ingredient could not be updated.', 500);
+  return c.redirect('/ingredients?' + (ingredient.enrichment_status === 'needs_review' ? 'reviewed=1' : 'updated=1'), 303);
+});
+
+app.post('/ingredients/:ingredientId/delete', async (c) => {
+  const ingredientId = c.req.param('ingredientId');
+  if (!/^\d+$/.test(ingredientId)) return c.notFound();
+  const ingredient = await c.env.DB.prepare(
+    'SELECT id FROM ingredients WHERE id = ?'
+  ).bind(ingredientId).first<{ id: number }>();
+  if (!ingredient) return c.notFound();
+  const result = await c.env.DB.prepare(
+    'DELETE FROM ingredients WHERE id = ?'
+  ).bind(ingredientId).run();
+  if (!result.success) return c.text('The ingredient could not be deleted.', 500);
+  return c.redirect('/ingredients?deleted=1', 303);
 });
 
 app.get('/recipes/:recipeId', async (c) => {
