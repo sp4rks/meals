@@ -1,0 +1,17 @@
+{
+  "name": "meals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=/tmp/meals-wrangler.log wrangler dev --local --ip 0.0.0.0",
+    "db:migrate:local": "WRANGLER_LOG_PATH=/tmp/meals-wrangler.log wrangler d1 migrations apply meals --local",
+    "check": "WRANGLER_LOG_PATH=/tmp/meals-wrangler.log wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "hono": "^4.13.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "wrangler": "^4.131.1"
+  }
+}

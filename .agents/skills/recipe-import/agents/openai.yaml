@@ -1,0 +1,3 @@
+interface:
+  display_name: "Recipe Import"
+  short_description: "Import pasted recipe URLs into reviewable JSON"
