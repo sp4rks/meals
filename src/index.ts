@@ -257,7 +257,7 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   '<main id="main">',
   '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Recipes</li></ol></nav><label class="mode-toggle toggle"><span>Adult</span><input type="checkbox" role="switch" data-kid-mode aria-controls="recipe-results" aria-label="Kid mode"><span>Kid</span></label></header>',
   flash?.kind === 'success'
-    ? '<div class="notice import-status" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>'
+    ? '<div class="toast import-status" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>'
     : '',
   '<section aria-labelledby="recipes-heading"><p class="eyebrow">The recipe box</p>',
   '<div class="section-heading"><div><h1 id="recipes-heading">Good things on repeat.</h1><p class="muted">Recipes ready for the table.</p></div>',
@@ -271,6 +271,12 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   'const importDialog = document.getElementById("import-dialog");',
   'document.querySelector("[data-open-import]")?.addEventListener("click", () => importDialog?.showModal());',
   'document.querySelectorAll("[data-close-import]").forEach((button) => button.addEventListener("click", () => importDialog?.close()));',
+  'const importForm = document.querySelector(".import-dialog form");',
+  'const importSubmit = importForm?.querySelector("button[type=submit]");',
+  'importForm?.addEventListener("submit", () => { importForm.setAttribute("aria-busy", "true"); if (importSubmit instanceof HTMLButtonElement) { importSubmit.disabled = true; importSubmit.classList.add("is-loading"); importSubmit.textContent = "Importing…"; } });',
+  'window.addEventListener("pageshow", () => { importForm?.removeAttribute("aria-busy"); if (importSubmit instanceof HTMLButtonElement) { importSubmit.disabled = false; importSubmit.classList.remove("is-loading"); importSubmit.textContent = "Import recipe ↗"; } });',
+  'const importToast = document.querySelector(".toast.import-status");',
+  'if (importToast) window.setTimeout(() => importToast.remove(), 4000);',
   'const randomizeUnderline = (element) => { const randomRadius = () => `${8 + Math.random() * 72}%`; const randomDirection = () => Math.random() < .5 ? -1 : 1; element.style.setProperty("--scribble-left-radius", randomRadius()); element.style.setProperty("--scribble-right-radius", randomRadius()); element.style.setProperty("--scribble-left-direction", randomDirection()); element.style.setProperty("--scribble-right-direction", randomDirection()); };',
   'document.querySelectorAll("h1, .scribble").forEach(randomizeUnderline);',
   'const manageButton = document.querySelector("[data-manage-recipes]");',
@@ -422,7 +428,7 @@ app.post('/recipes/:recipeId/delete', async (c) => {
   ).bind(recipeId).run();
   if (!result.success) return c.text('The recipe could not be deleted.', 500);
   await c.env.MEDIA.delete('recipes/' + recipeId.replace(':', '/'));
-  return c.redirect('/', 303);
+  return c.redirect('/?deleted=1', 303);
 });
 
 app.get('/', async (c) => {
@@ -433,6 +439,8 @@ app.get('/', async (c) => {
           ? 'Recipe imported and saved for review.'
           : 'Recipe imported and added to your box.'
       }
+    : c.req.query('deleted')
+      ? { kind: 'success' as const, message: 'Recipe deleted from your box.' }
     : undefined;
   return c.html(page(await listRecipes(c.env.DB), flash));
 });

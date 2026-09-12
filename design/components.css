@@ -55,6 +55,7 @@ footer { margin-top: var(--space-12); border-top: var(--border); padding-block: 
 .button.secondary { border: var(--border); background: var(--color-surface); color: var(--color-text); }
 .button.secondary:hover, .button.quiet:hover { background: var(--color-muted); }
 .button.quiet { color: var(--color-herb); background: transparent; }
+.button.is-loading::before { content: ''; width: .9rem; height: .9rem; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: import-spinner .7s linear infinite; }
 .button.danger { color: var(--color-danger); background: var(--color-danger-soft); }
 .button.danger:hover { background: #f4d8d0; }
 .button[aria-pressed=true] { border-color: var(--color-herb); background: var(--color-herb-soft); color: var(--color-herb); }
@@ -214,8 +215,16 @@ th { font-size: var(--text-xs); color: var(--color-secondary); font-weight: 600;
 .empty-symbol { display: block; font: 2rem var(--font-display); color: #7d8d70; margin-bottom: .5rem; }
 .notice, .toast { padding: 1rem; border-radius: var(--radius-md); background: var(--color-herb-soft); color: var(--color-herb); font-size: var(--text-sm); }
 .toast { border: 1px solid #ccd8c4; display: flex; gap: .75rem; align-items: flex-start; }
+.toast.import-status { position: fixed; inset: auto 1rem 1rem; left: 50%; z-index: 10; width: min(calc(100% - 2rem), 28rem); box-shadow: var(--shadow-md); animation: toast 4s var(--ease) forwards; }
 .toast.error { color: var(--color-danger); background: var(--color-danger-soft); border-color: #e7c9c3; }
 .notice.warning { background: var(--color-butter); color: var(--color-warning); }
+@keyframes toast {
+  0% { opacity: 0; transform: translate(-50%, 1rem); }
+  8% { opacity: 1; transform: translate(-50%, 0); }
+  88% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, 1rem); }
+}
+@keyframes import-spinner { to { transform: rotate(360deg); } }
 .skeleton { height: 14px; margin: .8rem 0; border-radius: var(--radius-sm); background: var(--color-muted); }
 .skeleton.image { height: 110px; margin-top: 0; }
 .skeleton.short { width: 60%; }
