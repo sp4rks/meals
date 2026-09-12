@@ -21,13 +21,20 @@ cookies, or session headers.
    An extracted backup directory can be parsed with `--directory`, and a single
    exported recipe text file with `--file`.
 3. Review every emitted candidate and its warnings. Do not fill missing values
-   from memory or from an unauthenticated fetch. Only save candidates after the
-   normal recipe review/ingest step; this skill does not write D1 or R2.
+   from memory or from an unauthenticated fetch. Extraction is the default; only
+   after explicit local-dev approval, upload the supported candidate fields with:
+
+       node .agents/skills/onetsp-import/scripts/upload-local.cjs \
+         --candidates "/tmp/onetsp-candidates.json"
+
+   This upload is hard-wired to the local `.wrangler` D1 state, preserves
+   `READY`/`NEEDS_REVIEW`, and does not fetch source URLs or create R2 objects.
 
 The parser uses One tsp.'s custom export format and emits the meals candidate
 shape. It keeps One tsp. metadata such as source, yield, prep time, cooking
 time, total time, and notes under `recipe.metadata`; One tsp. exports do not
-include recipe photos. Run the local check with:
+include recipe photos. When an export has no original URL, its source uses an
+`onetsp://export/<id>` provenance URI. Run the local check with:
 
     node .agents/skills/onetsp-import/scripts/import-onetsp.cjs --self-test
 

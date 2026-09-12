@@ -1,0 +1,4 @@
+interface:
+  display_name: "Woolworths Ingredient Enrichment"
+  short_description: "Link ingredients to Woolworths pack sizes"
+  default_prompt: "Use $woolworths-ingredient-enrichment to match the pending local ingredient rows to Woolworths products and record their purchase amounts."

@@ -33,6 +33,7 @@ type RecipeIngredient = {
 };
 
 type RecipeRow = RecipeSummary & {
+  source_image_url: string;
   cook_time_from: number | null;
   cook_time_to: number | null;
   cook_time_unit: string;
@@ -53,6 +54,9 @@ type IngredientRow = {
   name: string;
   category: string | null;
   default_unit: string | null;
+  woolworths_url: string;
+  purchase_quantity: number | null;
+  purchase_unit: string | null;
   storage_location: 'pantry' | 'refrigerator' | 'freezer' | null;
   storage_notes: string;
   enrichment_status: 'pending' | 'complete' | 'needs_review' | 'failed';
@@ -102,12 +106,37 @@ const escapeHtml = (value: string) =>
   })[character] || character);
 
 const recipePath = (recipe: RecipeSummary) => '/recipes/' + encodeURIComponent(recipe.id);
+const recipeImageSearchUrl = (title: string) => 'https://www.google.com/search?' + new URLSearchParams({ q: title }).toString();
+const validRecipeId = (value: string) => /^[a-z0-9-]+:[a-z0-9._-]+$/i.test(value);
 
 const normalizeIngredientName = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
 const formString = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 
 const reviewStorage = (value: unknown) => value === 'pantry' || value === 'refrigerator' || value === 'freezer' ? value : null;
+
+const purchaseUnits = ['g', 'kg', 'mL', 'L', 'each', 'bunch', 'packet', 'tin', 'jar', 'bottle'] as const;
+
+const reviewPurchaseUnit = (value: unknown) => purchaseUnits.includes(value as typeof purchaseUnits[number]) ? value as typeof purchaseUnits[number] : null;
+
+const woolworthsUrl = (value: unknown) => {
+  const raw = formString(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.hostname !== 'www.woolworths.com.au' || !/^\/shop\/productdetails\/\d+(?:\/[^/]*)?$/.test(url.pathname)) return null;
+    return 'https://www.woolworths.com.au' + url.pathname.replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+};
+
+const purchaseQuantity = (value: unknown) => {
+  const raw = formString(value);
+  if (!raw) return null;
+  const quantity = Number(raw);
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : null;
+};
 
 const reviewStatus = (value: unknown): IngredientRow['enrichment_status'] | null => value === 'pending' || value === 'complete' || value === 'needs_review' || value === 'failed' ? value : null;
 
@@ -119,16 +148,23 @@ const formatEnrichmentStatus = (value: IngredientRow['enrichment_status']) => ({
 } as const)[value] || ['Unknown', 'warning'];
 
 const ingredientTriggerData = (ingredient: IngredientRow) =>
-  ' data-ingredient-review data-id="' + ingredient.id + '" data-status="' + ingredient.enrichment_status + '" data-name="' + escapeHtml(ingredient.name) + '" data-category="' + escapeHtml(ingredient.category || '') + '" data-unit="' + escapeHtml(ingredient.default_unit || '') + '" data-storage-location="' + escapeHtml(ingredient.storage_location || '') + '" data-storage-notes="' + escapeHtml(ingredient.storage_notes) + '" data-review-feedback="' + escapeHtml(ingredient.review_feedback) + '" data-question="' + escapeHtml(ingredient.enrichment_notes) + '"';
+  ' data-ingredient-review data-id="' + ingredient.id + '" data-status="' + ingredient.enrichment_status + '" data-name="' + escapeHtml(ingredient.name) + '" data-category="' + escapeHtml(ingredient.category || '') + '" data-unit="' + escapeHtml(ingredient.default_unit || '') + '" data-woolworths-url="' + escapeHtml(ingredient.woolworths_url) + '" data-purchase-quantity="' + (ingredient.purchase_quantity == null ? '' : ingredient.purchase_quantity) + '" data-purchase-unit="' + escapeHtml(ingredient.purchase_unit || '') + '" data-storage-location="' + escapeHtml(ingredient.storage_location || '') + '" data-storage-notes="' + escapeHtml(ingredient.storage_notes) + '" data-review-feedback="' + escapeHtml(ingredient.review_feedback) + '" data-question="' + escapeHtml(ingredient.enrichment_notes) + '"';
+
+const formatPurchase = (ingredient: IngredientRow) => ingredient.purchase_quantity == null || !ingredient.purchase_unit
+  ? '—'
+  : ingredient.purchase_quantity + ' ' + ingredient.purchase_unit;
 
 const ingredientTable = (ingredients: IngredientRow[]) => ingredients.length
-  ? '<div class="card"><div class="table-wrap"><table><caption class="sr-only">Ingredient catalogue</caption><thead><tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Unit</th><th scope="col">Storage</th><th scope="col">Enrichment</th><th scope="col">Actions</th></tr></thead><tbody>' + ingredients.map((ingredient) => {
+  ? '<div class="card"><div class="table-wrap"><table><caption class="sr-only">Ingredient catalogue</caption><thead><tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Unit</th><th scope="col">Purchase</th><th scope="col">Woolworths</th><th scope="col">Storage</th><th scope="col">Enrichment</th><th scope="col">Actions</th></tr></thead><tbody>' + ingredients.map((ingredient) => {
       const [status, badge] = formatEnrichmentStatus(ingredient.enrichment_status);
       const enrichment = ingredient.enrichment_status === 'needs_review'
         ? '<button class="ingredient-review-trigger help" type="button"' + ingredientTriggerData(ingredient) + '>' + escapeHtml(ingredient.enrichment_notes || 'Review ingredient') + '</button>'
         : '<span class="badge ' + badge + '">' + status + '</span>';
+      const product = ingredient.woolworths_url
+        ? '<a href="' + escapeHtml(ingredient.woolworths_url) + '">Open product</a>'
+        : '—';
       const edit = '<button class="button quiet" type="button"' + ingredientTriggerData(ingredient) + ' aria-label="Edit ' + escapeHtml(ingredient.name) + '">Edit</button>';
-      return '<tr><td data-label="Name"><strong>' + escapeHtml(ingredient.name) + '</strong></td><td data-label="Category">' + escapeHtml(ingredient.category || '—') + '</td><td data-label="Unit">' + escapeHtml(ingredient.default_unit || '—') + '</td><td data-label="Storage">' + escapeHtml(ingredient.storage_location || '—') + '</td><td data-label="Enrichment">' + enrichment + '</td><td class="ingredient-table-actions" data-label="Actions">' + edit + '</td></tr>';
+      return '<tr><td data-label="Name"><strong>' + escapeHtml(ingredient.name) + '</strong></td><td data-label="Category">' + escapeHtml(ingredient.category || '—') + '</td><td data-label="Unit">' + escapeHtml(ingredient.default_unit || '—') + '</td><td data-label="Purchase">' + escapeHtml(formatPurchase(ingredient)) + '</td><td data-label="Woolworths">' + product + '</td><td data-label="Storage">' + escapeHtml(ingredient.storage_location || '—') + '</td><td data-label="Enrichment">' + enrichment + '</td><td class="ingredient-table-actions" data-label="Actions">' + edit + '</td></tr>';
     }).join('') + '</tbody></table></div></div>'
   : '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌁</span><h2>No ingredients yet</h2><p>Ingredients will appear here when recipes are imported.</p></div>';
 
@@ -136,19 +172,20 @@ const recipeCard = (recipe: RecipeSummary) => [
   '<article class="card recipe-card">',
   '<div class="recipe-card-hero">',
   recipe.image_url
-    ? '<a class="recipe-card-image-link" href="' + recipePath(recipe) + '"><div class="meal-art"><img class="recipe-image" src="' + escapeHtml(recipe.image_url) + '" alt="" loading="lazy" decoding="async"></div></a>'
-    : '<a class="recipe-card-image-link" href="' + recipePath(recipe) + '"><div class="meal-art butter" aria-hidden="true"><span>something good</span></div></a>',
-  '<form class="recipe-delete-form" action="' + recipePath(recipe) + '/delete" method="post" hidden><button class="button danger" type="submit" aria-label="Delete ' + escapeHtml(recipe.title) + '">Delete</button></form>',
+    ? '<a class="recipe-card-image-link" href="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for images of ' + escapeHtml(recipe.title) + '"><div class="meal-art"><img class="recipe-image" src="' + escapeHtml(recipe.image_url) + '" alt="" loading="lazy" decoding="async"></div></a>'
+    : '<div class="meal-art butter recipe-image-placeholder"><a class="recipe-card-image-link" href="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for images of ' + escapeHtml(recipe.title) + '"><span>something good</span></a><a class="button secondary recipe-image-add" href="' + recipePath(recipe) + '" data-image-search-url="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" aria-label="Add an image to ' + escapeHtml(recipe.title) + '">Add Image</a></div>',
   '</div>',
   '<div class="recipe-body">',
   '<div class="row"><h2><a href="' + recipePath(recipe) + '">' + escapeHtml(recipe.title) + '</a></h2></div>',
   recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '',
-  '<p>' + escapeHtml(recipe.description) + '</p>',
+  '<p class="recipe-description">' + escapeHtml(recipe.description) + '</p>',
   '<a class="button quiet" href="' + recipePath(recipe) + '">View recipe →</a>',
   '<div class="tags">' + parseJson<string[]>(recipe.tags_json, []).map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>',
   '</div>',
   '</article>'
 ].join('');
+
+const recipeEditDialog = (recipe: RecipeRow, open = false) => '<dialog class="recipe-edit-dialog" id="recipe-edit-dialog"' + (open ? ' open' : '') + '><form class="card stack" action="' + recipePath(recipe) + '/edit" method="post"><div class="section-heading"><h2>Edit recipe</h2><button class="button quiet icon" type="button" data-close-recipe-edit>×</button></div><div class="field"><label for="recipe-title">Name</label><input id="recipe-title" name="title" required value="' + escapeHtml(recipe.title) + '"></div><div class="field"><label for="recipe-subtitle">Subtitle</label><input id="recipe-subtitle" name="subtitle" value="' + escapeHtml(recipe.subtitle) + '"></div><div class="field"><label for="recipe-description">Description</label><textarea id="recipe-description" name="description" rows="3">' + escapeHtml(recipe.description) + '</textarea></div><div class="field image-edit"><label>Image URL</label><div class="recipe-edit-image"><a class="recipe-edit-image-link" href="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for images of ' + escapeHtml(recipe.title) + '">' + (recipe.image_url ? '<img src="' + escapeHtml(recipe.image_url) + '" alt="' + escapeHtml(recipe.title) + '">' : '<span>No image</span>') + '</a><button class="button secondary" type="button" data-replace-image>' + (recipe.image_url ? 'Replace image' : 'Add Image') + '</button></div><input id="recipe-image-url" name="image_url" type="url" value="' + escapeHtml(recipe.source_image_url || '') + '" placeholder="https://…"><p class="help">Use an HTTPS image URL.</p></div><div class="actions"><button class="button secondary" type="button" data-close-recipe-edit>Cancel</button><button class="button" type="submit">Save changes</button><button class="button danger" type="submit" formaction="' + recipePath(recipe) + '/delete" formmethod="post" formnovalidate data-delete-recipe>Delete recipe</button></div></form></dialog>';
 
 const parseJson = <T>(value: string, fallback: T) => {
   try {
@@ -179,7 +216,7 @@ const formatCookedAt = (value: string) => {
     : new Intl.DateTimeFormat('en-AU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Australia/Melbourne' }).format(date);
 };
 
-const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[]) => {
+const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[], error = '') => {
   const ingredients = parseJson<RecipeIngredient[]>(recipe.ingredients_json, []);
   const steps = parseJson<Array<{ title: string; text: string }>>(recipe.steps_json, []);
   const macros = parseJson<{ perServing: RecipeMacros }>(recipe.macros_json, { perServing: { kcal: null, protein: null, carbs: null, fat: null } });
@@ -223,7 +260,8 @@ const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[]) => {
     '<main id="main">',
     '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li><a href="/">Recipes</a></li><li>' + escapeHtml(recipe.title) + '</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
     '<section aria-labelledby="recipe-heading">',
-    '<div class="section-heading"><div><p class="eyebrow">Recipe · ' + escapeHtml(recipe.source.replace('-', ' ')) + '</p><h1 id="recipe-heading">' + escapeHtml(recipe.title) + '</h1>' + (recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '') + '<p class="muted spaced">' + escapeHtml(recipe.description) + '</p>' + (tags.length ? '<div class="tags">' + tags.map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>' : '') + '</div><a class="button secondary" href="/">← All recipes</a></div>',
+    error ? '<div class="notice warning" role="alert">' + escapeHtml(error) + '</div>' : '',
+    '<div class="section-heading"><div><p class="eyebrow">Recipe · ' + escapeHtml(recipe.source.replace('-', ' ')) + '</p><h1 id="recipe-heading">' + escapeHtml(recipe.title) + '</h1>' + (recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '') + '<p class="muted spaced">' + escapeHtml(recipe.description) + '</p>' + (tags.length ? '<div class="tags">' + tags.map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>' : '') + '</div><div class="actions recipe-page-actions"><button class="button secondary" type="button" data-open-recipe-edit>Edit</button><a class="button secondary" href="/">← All recipes</a></div></div>',
     '<div class="recipe-detail-grid">',
     '<div class="stack recipe-detail-main">',
     '<article class="card recipe-hero-card">',
@@ -265,6 +303,8 @@ const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[]) => {
     '</div>',
     '</div>',
     '</section>',
+    recipeEditDialog(recipe, Boolean(error)),
+    '<script>const recipeEditDialogElement = document.getElementById("recipe-edit-dialog"); document.querySelector("[data-open-recipe-edit]")?.addEventListener("click", () => recipeEditDialogElement?.showModal()); document.querySelectorAll("[data-close-recipe-edit]").forEach((button) => button.addEventListener("click", () => recipeEditDialogElement?.close())); const imageUrl = document.getElementById("recipe-image-url"); document.querySelector("[data-replace-image]")?.addEventListener("click", () => { const value = window.prompt("HTTPS image URL", imageUrl?.value || ""); if (value !== null && imageUrl) imageUrl.value = value.trim(); }); recipeEditDialogElement?.querySelector("form")?.addEventListener("submit", (event) => { if (event.submitter instanceof HTMLButtonElement && event.submitter.hasAttribute("data-delete-recipe") && !window.confirm("Delete this recipe? This cannot be undone.")) event.preventDefault(); });</script>',
     '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
     '</main></div></body></html>'
   ].join('');
@@ -303,7 +343,7 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
     : '',
   '<section aria-labelledby="recipes-heading"><p class="eyebrow">The recipe box</p>',
   '<div class="section-heading"><div><h1 id="recipes-heading">Good things on repeat.</h1><p class="muted">Recipes ready for the table.</p></div>',
-  '<div class="actions"><button class="button secondary" type="button" data-manage-recipes aria-controls="recipe-results" aria-pressed="false">Manage</button><button class="button" type="button" data-open-import aria-haspopup="dialog">Import</button></div></div>',
+  '<div class="actions"><button class="button" type="button" data-open-import aria-haspopup="dialog">Import</button></div></div>',
   recipes.length
     ? '<div class="recipe-grid" id="recipe-results">' + recipes.map(recipeCard).join('') + '</div>'
     : '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌕</span><h2>No recipes yet</h2><p>Import a recipe URL to get the first one in the box.</p></div>',
@@ -319,12 +359,9 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   'window.addEventListener("pageshow", () => { importForm?.removeAttribute("aria-busy"); if (importSubmit instanceof HTMLButtonElement) { importSubmit.disabled = false; importSubmit.classList.remove("is-loading"); importSubmit.textContent = "Import recipe ↗"; } });',
   'const importToast = document.querySelector(".toast.import-status");',
   'if (importToast) window.setTimeout(() => importToast.remove(), 4000);',
+  'document.querySelectorAll("[data-image-add]").forEach((link) => link.addEventListener("click", () => { if (link instanceof HTMLAnchorElement && link.dataset.imageSearchUrl) window.open(link.dataset.imageSearchUrl, "_blank", "noopener,noreferrer"); }));',
   'const randomizeUnderline = (element) => { const randomRadius = () => `${8 + Math.random() * 72}%`; const randomDirection = () => Math.random() < .5 ? -1 : 1; element.style.setProperty("--scribble-left-radius", randomRadius()); element.style.setProperty("--scribble-right-radius", randomRadius()); element.style.setProperty("--scribble-left-direction", randomDirection()); element.style.setProperty("--scribble-right-direction", randomDirection()); };',
   'document.querySelectorAll("h1, .scribble").forEach(randomizeUnderline);',
-  'const manageButton = document.querySelector("[data-manage-recipes]");',
-  'const recipeResults = document.getElementById("recipe-results");',
-  'manageButton?.addEventListener("click", () => { const managing = manageButton.getAttribute("aria-pressed") !== "true"; manageButton.setAttribute("aria-pressed", String(managing)); recipeResults?.querySelectorAll(".recipe-delete-form").forEach((form) => { form.hidden = !managing; }); });',
-  'recipeResults?.addEventListener("submit", (event) => { if (event.target instanceof HTMLFormElement && event.target.classList.contains("recipe-delete-form") && !window.confirm("Delete this recipe?")) event.preventDefault(); });',
   'const recipeCards = [...document.querySelectorAll(".recipe-card")];',
   'const randomTilt = (range) => Math.random() * range * 2 - range;',
   'const setCardTilt = (card, degrees) => { card.style.setProperty("--recipe-base-tilt", `${degrees}deg`); card.style.setProperty("--recipe-tilt", `${degrees}deg`); };',
@@ -352,6 +389,9 @@ const ingredientReviewDialog = () => [
   '<div class="field full"><label for="ingredient-review-name">Name</label><input id="ingredient-review-name" name="name" required></div>',
   '<div class="field"><label for="ingredient-review-category">Category</label><select id="ingredient-review-category" name="category"><option value="">Unknown</option><option>fruit</option><option>vegetable</option><option>meat</option><option>poultry</option><option>fish</option><option>seafood</option><option>dairy</option><option>egg</option><option>grain</option><option>herb</option><option>spice</option><option>staple</option><option>condiment</option><option>prepared</option></select></div>',
   '<div class="field"><label for="ingredient-review-unit">Unit</label><select id="ingredient-review-unit" name="default_unit"><option value="">Unknown</option><option>g</option><option>kg</option><option>mL</option><option>L</option><option>whole</option><option>bunch</option><option>packet</option><option>cube</option></select></div>',
+  '<div class="field full"><label for="ingredient-review-woolworths-url">Woolworths product URL</label><input id="ingredient-review-woolworths-url" name="woolworths_url" type="url" placeholder="https://www.woolworths.com.au/shop/productdetails/…"></div>',
+  '<div class="field"><label for="ingredient-review-purchase-quantity">Purchase amount</label><input id="ingredient-review-purchase-quantity" name="purchase_quantity" type="number" min="0" step="any" placeholder="1"></div>',
+  '<div class="field"><label for="ingredient-review-purchase-unit">Purchase unit</label><select id="ingredient-review-purchase-unit" name="purchase_unit"><option value="">Unknown</option><option>g</option><option>kg</option><option>mL</option><option>L</option><option>each</option><option>bunch</option><option>packet</option><option>tin</option><option>jar</option><option>bottle</option></select></div>',
   '<div class="field"><label for="ingredient-review-storage-location">Storage</label><select id="ingredient-review-storage-location" name="storage_location"><option value="">Unknown</option><option value="pantry">Pantry</option><option value="refrigerator">Refrigerator</option><option value="freezer">Freezer</option></select></div>',
   '<div class="field"><label for="ingredient-review-status">Status</label><select id="ingredient-review-status" name="status" required><option value="pending">Pending</option><option value="complete">Complete</option><option value="needs_review">Needs review</option><option value="failed">Failed</option></select></div>',
   '<div class="field full"><label for="ingredient-review-storage-notes">Storage notes</label><textarea id="ingredient-review-storage-notes" name="storage_notes" rows="2" placeholder="Optional details, such as refrigerate after opening"></textarea></div>',
@@ -365,7 +405,7 @@ const ingredientReviewDialog = () => [
   'const ingredientReviewForm = ingredientReviewDialog?.querySelector("form");',
   'ingredientReviewForm?.addEventListener("submit", (event) => { if (!(event.submitter instanceof HTMLButtonElement) || !event.submitter.hasAttribute("data-delete-ingredient")) return; event.preventDefault(); if (!window.confirm("Delete " + (event.submitter.dataset.name || "this ingredient") + "?")) return; if (ingredientReviewForm instanceof HTMLFormElement) { ingredientReviewForm.action = "/ingredients/" + event.submitter.dataset.id + "/delete"; ingredientReviewForm.submit(); } });',
   'const setIngredientReviewValue = (selector, value) => { const field = ingredientReviewDialog?.querySelector(selector); if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement) field.value = value || ""; };',
-  'document.querySelectorAll("[data-ingredient-review]").forEach((button) => button.addEventListener("click", () => { if (!(button instanceof HTMLElement)) return; const reviewing = button.dataset.status === "needs_review"; const eyebrow = ingredientReviewDialog?.querySelector("[data-ingredient-review-eyebrow]"); const heading = ingredientReviewDialog?.querySelector("#ingredient-review-heading"); const deleteButton = ingredientReviewDialog?.querySelector("[data-delete-ingredient]"); if (eyebrow) eyebrow.textContent = reviewing ? "Needs review" : "Edit ingredient"; if (heading) heading.textContent = reviewing ? "Review ingredient" : "Edit ingredient"; if (deleteButton instanceof HTMLButtonElement) { deleteButton.dataset.id = button.dataset.id || ""; deleteButton.dataset.name = button.dataset.name || "this ingredient"; } if (ingredientReviewForm instanceof HTMLFormElement) ingredientReviewForm.action = "/ingredients/" + button.dataset.id + "/review"; const question = ingredientReviewDialog?.querySelector("#ingredient-review-question"); if (question) question.textContent = reviewing ? (button.dataset.question || "Add the missing ingredient details.") : "Update the shared ingredient details."; setIngredientReviewValue("#ingredient-review-name", button.dataset.name); setIngredientReviewValue("#ingredient-review-category", button.dataset.category); setIngredientReviewValue("#ingredient-review-unit", button.dataset.unit); setIngredientReviewValue("#ingredient-review-storage-location", button.dataset.storageLocation); setIngredientReviewValue("#ingredient-review-status", button.dataset.status); setIngredientReviewValue("#ingredient-review-storage-notes", button.dataset.storageNotes); setIngredientReviewValue("#ingredient-review-feedback", button.dataset.reviewFeedback); ingredientReviewDialog?.showModal(); }));',
+  'document.querySelectorAll("[data-ingredient-review]").forEach((button) => button.addEventListener("click", () => { if (!(button instanceof HTMLElement)) return; const reviewing = button.dataset.status === "needs_review"; const eyebrow = ingredientReviewDialog?.querySelector("[data-ingredient-review-eyebrow]"); const heading = ingredientReviewDialog?.querySelector("#ingredient-review-heading"); const deleteButton = ingredientReviewDialog?.querySelector("[data-delete-ingredient]"); if (eyebrow) eyebrow.textContent = reviewing ? "Needs review" : "Edit ingredient"; if (heading) heading.textContent = reviewing ? "Review ingredient" : "Edit ingredient"; if (deleteButton instanceof HTMLButtonElement) { deleteButton.dataset.id = button.dataset.id || ""; deleteButton.dataset.name = button.dataset.name || "this ingredient"; } if (ingredientReviewForm instanceof HTMLFormElement) ingredientReviewForm.action = "/ingredients/" + button.dataset.id + "/review"; const question = ingredientReviewDialog?.querySelector("#ingredient-review-question"); if (question) question.textContent = reviewing ? (button.dataset.question || "Add the missing ingredient details.") : "Update the shared ingredient details."; setIngredientReviewValue("#ingredient-review-name", button.dataset.name); setIngredientReviewValue("#ingredient-review-category", button.dataset.category); setIngredientReviewValue("#ingredient-review-unit", button.dataset.unit); setIngredientReviewValue("#ingredient-review-woolworths-url", button.dataset.woolworthsUrl); setIngredientReviewValue("#ingredient-review-purchase-quantity", button.dataset.purchaseQuantity); setIngredientReviewValue("#ingredient-review-purchase-unit", button.dataset.purchaseUnit); setIngredientReviewValue("#ingredient-review-storage-location", button.dataset.storageLocation); setIngredientReviewValue("#ingredient-review-status", button.dataset.status); setIngredientReviewValue("#ingredient-review-storage-notes", button.dataset.storageNotes); setIngredientReviewValue("#ingredient-review-feedback", button.dataset.reviewFeedback); ingredientReviewDialog?.showModal(); }));',
   'document.querySelectorAll("[data-close-ingredient-review]").forEach((button) => button.addEventListener("click", () => ingredientReviewDialog?.close()));',
   '</script>'
 ].join('');
@@ -397,14 +437,14 @@ const ingredientsPage = (ingredients: IngredientRow[], flash?: Flash) => [
 
 const listIngredients = async (db: D1Database) => {
   const { results } = await db.prepare(
-    'SELECT id, name, category, default_unit, storage_location, storage_notes, enrichment_status, enrichment_notes, enriched_at, review_feedback FROM ingredients ORDER BY name COLLATE NOCASE'
+    'SELECT id, name, category, default_unit, woolworths_url, purchase_quantity, purchase_unit, storage_location, storage_notes, enrichment_status, enrichment_notes, enriched_at, review_feedback FROM ingredients ORDER BY name COLLATE NOCASE'
   ).all<IngredientRow>();
   return results;
 };
 
 const getRecipe = async (db: D1Database, id: string) => {
   const recipe = await db.prepare(
-    'SELECT id, source, source_url, title, subtitle, description, image_url, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, tags_json, ingredients_json, steps_json FROM recipes WHERE id = ? AND status = ?'
+    'SELECT id, source, source_url, title, subtitle, description, image_url, source_image_url, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, tags_json, ingredients_json, steps_json FROM recipes WHERE id = ? AND status = ?'
   ).bind(id, 'ready').first<RecipeRow>();
   return recipe;
 };
@@ -482,7 +522,7 @@ app.get('/health', (c) => c.json({ ok: true }));
 
 app.get('/media/*', async (c) => {
   const key = c.req.path.slice('/media/'.length);
-  if (!/^recipes\/[a-z0-9-]+\/\d+$/.test(key)) return c.notFound();
+  if (!/^recipes\/[a-z0-9-]+\/[a-z0-9._-]+$/i.test(key)) return c.notFound();
   const object = await c.env.MEDIA.get(key);
   if (!object) return c.notFound();
   const headers = new Headers();
@@ -525,6 +565,19 @@ app.post('/ingredients/:ingredientId/review', async (c) => {
     }), 400);
   }
 
+  const rawWoolworthsUrl = formString(body.woolworths_url);
+  const productUrl = woolworthsUrl(body.woolworths_url);
+  const rawPurchaseQuantity = formString(body.purchase_quantity);
+  const quantity = purchaseQuantity(body.purchase_quantity);
+  const rawPurchaseUnit = formString(body.purchase_unit);
+  const unit = reviewPurchaseUnit(body.purchase_unit);
+  if ((rawWoolworthsUrl && !productUrl) || (rawPurchaseQuantity && quantity == null) || (rawPurchaseUnit && !unit) || (!!rawPurchaseQuantity !== !!rawPurchaseUnit)) {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+      kind: 'error',
+      message: 'Use a Woolworths product URL and a valid purchase amount with unit.'
+    }), 400);
+  }
+
   const duplicate = await c.env.DB.prepare(
     'SELECT id FROM ingredients WHERE normalized_name = ? AND id != ?'
   ).bind(normalizedName, ingredientId).first<{ id: number }>();
@@ -536,13 +589,16 @@ app.post('/ingredients/:ingredientId/review', async (c) => {
   }
 
   const result = await c.env.DB.prepare([
-    "UPDATE ingredients SET name = ?, normalized_name = ?, category = ?, default_unit = ?, storage_location = ?, storage_notes = ?, review_feedback = ?, enrichment_status = ?, enrichment_notes = CASE WHEN ? = 'needs_review' THEN enrichment_notes ELSE '' END, enriched_at = CASE WHEN ? = 'complete' THEN CURRENT_TIMESTAMP ELSE enriched_at END, updated_at = CURRENT_TIMESTAMP",
+    "UPDATE ingredients SET name = ?, normalized_name = ?, category = ?, default_unit = ?, woolworths_url = ?, purchase_quantity = ?, purchase_unit = ?, storage_location = ?, storage_notes = ?, review_feedback = ?, enrichment_status = ?, enrichment_notes = CASE WHEN ? = 'needs_review' THEN enrichment_notes ELSE '' END, enriched_at = CASE WHEN ? = 'complete' THEN CURRENT_TIMESTAMP ELSE enriched_at END, updated_at = CURRENT_TIMESTAMP",
     'WHERE id = ?'
   ].join(' ')).bind(
     name,
     normalizedName,
     formString(body.category) || null,
     formString(body.default_unit) || null,
+    productUrl || '',
+    quantity,
+    unit,
     reviewStorage(body.storage_location),
     formString(body.storage_notes),
     formString(body.review_feedback),
@@ -571,14 +627,14 @@ app.post('/ingredients/:ingredientId/delete', async (c) => {
 
 app.get('/recipes/:recipeId', async (c) => {
   const recipeId = c.req.param('recipeId');
-  if (!/^[a-z0-9-]+:\d+$/.test(recipeId)) return c.notFound();
+  if (!validRecipeId(recipeId)) return c.notFound();
   const recipe = await getRecipe(c.env.DB, recipeId);
   return recipe ? c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id))) : c.notFound();
 });
 
 app.post('/recipes/:recipeId/cook', async (c) => {
   const recipeId = c.req.param('recipeId');
-  if (!/^[a-z0-9-]+:\d+$/.test(recipeId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
+  if (!validRecipeId(recipeId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
   const result = await c.env.DB.prepare(
     'INSERT INTO recipe_cooks (recipe_id, cooked_at) VALUES (?, ?)'
   ).bind(recipeId, new Date().toISOString()).run();
@@ -589,7 +645,7 @@ app.post('/recipes/:recipeId/cook', async (c) => {
 app.post('/recipes/:recipeId/cooks/:cookId/delete', async (c) => {
   const recipeId = c.req.param('recipeId');
   const cookId = c.req.param('cookId');
-  if (!/^[a-z0-9-]+:\d+$/.test(recipeId) || !/^\d+$/.test(cookId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
+  if (!validRecipeId(recipeId) || !/^\d+$/.test(cookId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
   const result = await c.env.DB.prepare(
     'DELETE FROM recipe_cooks WHERE id = ? AND recipe_id = ?'
   ).bind(cookId, recipeId).run();
@@ -599,7 +655,7 @@ app.post('/recipes/:recipeId/cooks/:cookId/delete', async (c) => {
 
 app.post('/recipes/:recipeId/delete', async (c) => {
   const recipeId = c.req.param('recipeId');
-  if (!/^[a-z0-9-]+:\d+$/.test(recipeId)) return c.notFound();
+  if (!validRecipeId(recipeId)) return c.notFound();
   if (!(await getRecipe(c.env.DB, recipeId))) return c.notFound();
   const result = await c.env.DB.prepare(
     'DELETE FROM recipes WHERE id = ?'
@@ -607,6 +663,27 @@ app.post('/recipes/:recipeId/delete', async (c) => {
   if (!result.success) return c.text('The recipe could not be deleted.', 500);
   await c.env.MEDIA.delete('recipes/' + recipeId.replace(':', '/'));
   return c.redirect('/?deleted=1', 303);
+});
+
+app.post('/recipes/:recipeId/edit', async (c) => {
+  const recipeId = c.req.param('recipeId');
+  if (!validRecipeId(recipeId)) return c.notFound();
+  const recipe = await getRecipe(c.env.DB, recipeId);
+  if (!recipe) return c.notFound();
+  const body = await c.req.parseBody();
+  const title = formString(body.title);
+  const imageUrl = formString(body.image_url);
+  if (!title) return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), 'Recipe name is required.'), 400);
+  if (imageUrl) {
+    try { if (new URL(imageUrl).protocol !== 'https:') throw new Error(); } catch { return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), 'Image URL must use HTTPS.'), 400); }
+  }
+  let image = { url: recipe.image_url, key: '' };
+  try {
+    if (imageUrl && imageUrl !== recipe.source_image_url) image = await copyImage(c.env.MEDIA, imageUrl, recipe.source, recipe.id.split(':')[1]);
+    const result = await c.env.DB.prepare('UPDATE recipes SET title = ?, subtitle = ?, description = ?, image_url = ?, source_image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(title, formString(body.subtitle), formString(body.description), image.url, imageUrl || recipe.source_image_url, recipeId).run();
+    if (!result.success) throw new Error('The recipe could not be updated.');
+  } catch (error) { return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), error instanceof Error ? error.message : 'The recipe could not be updated.'), 500); }
+  return c.redirect(recipePath(recipe) + '?updated=1', 303);
 });
 
 app.get('/', async (c) => {

@@ -53,13 +53,14 @@ function splitTags(value) {
     .filter(Boolean);
 }
 
-function sourceUrl(value) {
+function sourceUrl(value, fallbackId) {
+  const fallback = "onetsp://export/" + fallbackId;
   try {
     const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)) return ONETSP_URL;
+    if (!["http:", "https:"].includes(url.protocol)) return fallback;
     return url.toString();
   } catch {
-    return ONETSP_URL;
+    return fallback;
   }
 }
 
@@ -163,13 +164,14 @@ function parseRecipeText(text, fileName = "recipe.txt") {
   if (!ingredients.length) warnings.push("no ingredients were extracted");
   if (!directions.length) warnings.push("no directions were extracted");
 
+  const id = stableId(fileName, text);
   return {
     schemaVersion: 1,
     status: warnings.length ? "NEEDS_REVIEW" : "READY",
     source: {
       site: "onetsp",
-      url: sourceUrl(metadata.url),
-      id: stableId(fileName, text),
+      url: sourceUrl(metadata.url, id),
+      id,
       exportFile: path.basename(fileName),
       retrievedAt: new Date().toISOString()
     },

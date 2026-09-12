@@ -41,6 +41,28 @@ Keep the current simple server-rendered HTML and plain CSS approach. Reuse the
 existing escaping, import, D1, and R2 helpers before adding new abstractions or
 dependencies.
 
+## Design prototype
+
+- Treat `design/` as a dependency-free static prototype for household use;
+  keep it usable by opening `design/index.html` directly and do not add a
+  framework, backend, authentication, or JavaScript application for prototype
+  work.
+- Keep the visual direction modern and cozy, with warm restrained styling and
+  only occasional subtle “chaos” accents. Prefer domestic, practical flows
+  over restaurant, enterprise, or SaaS-dashboard conventions.
+- Preserve reusable building blocks for the dashboard, recipe library,
+  complete add/edit recipe form, meal planner, shopping list, and
+  pantry/leftovers, including loading, empty, error, validation, dialog, and
+  toast states.
+- Keep design tokens and components in `design/tokens.css` and
+  `design/components.css`, with reusable markup in `design/index.html` when a
+  static design deliverable is requested.
+- Treat mobile recipe consumption as a first-class requirement at 320–430px:
+  use a readable single-column layout, clear ingredient quantities, comfortable
+  instruction spacing, naturally reflowing images/content/actions, minimum
+  44px touch targets, no unnecessary horizontal scrolling, mobile navigation,
+  stacked forms, and phone-friendly meal planning and shopping lists.
+
 ## Recipe imports
 
 The canonical import logic lives in
