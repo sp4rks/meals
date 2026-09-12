@@ -92,9 +92,12 @@ const recipePath = (recipe: RecipeSummary) => '/recipes/' + encodeURIComponent(r
 
 const recipeCard = (recipe: RecipeSummary) => [
   '<article class="card recipe-card">',
+  '<div class="recipe-card-hero">',
   recipe.image_url
-    ? '<div class="meal-art"><img class="recipe-image" src="' + escapeHtml(recipe.image_url) + '" alt="" loading="lazy" decoding="async"></div>'
-    : '<div class="meal-art butter" aria-hidden="true"><span>something good</span></div>',
+    ? '<a class="recipe-card-image-link" href="' + recipePath(recipe) + '"><div class="meal-art"><img class="recipe-image" src="' + escapeHtml(recipe.image_url) + '" alt="" loading="lazy" decoding="async"></div></a>'
+    : '<a class="recipe-card-image-link" href="' + recipePath(recipe) + '"><div class="meal-art butter" aria-hidden="true"><span>something good</span></div></a>',
+  '<form class="recipe-delete-form" action="' + recipePath(recipe) + '/delete" method="post" hidden><button class="button danger" type="submit" aria-label="Delete ' + escapeHtml(recipe.title) + '">Delete</button></form>',
+  '</div>',
   '<div class="recipe-body">',
   '<div class="row"><h2><a href="' + recipePath(recipe) + '">' + escapeHtml(recipe.title) + '</a></h2></div>',
   recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '',
@@ -220,19 +223,22 @@ const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[]) => {
     '</div>',
     '</div>',
     '</section>',
-    '<footer>meals · local development</footer>',
+    '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
     '</main></div></body></html>'
   ].join('');
 };
 
-const importForm = (flash?: Flash) => [
-  '<form class="card stack import-panel" action="/" method="post">',
-  '<div class="section-heading"><div><p class="eyebrow">Quick import</p><h2>Bring in a recipe</h2><p class="muted">Paste a recipe URL and we’ll add it to the box for review.</p></div></div>',
-  '<div class="import-row"><div class="field"><label for="import-url">Recipe URL</label><input id="import-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://marleyspoon.com.au/menu/…" value="' + escapeHtml(flash?.url || '') + '" required></div><button class="button" type="submit">Import recipe ↗</button></div>',
-  flash
-    ? '<div class="notice ' + (flash.kind === 'error' ? 'warning' : '') + ' import-status" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>'
+const importDialog = (flash?: Flash) => [
+  '<dialog class="import-dialog" id="import-dialog" aria-labelledby="import-heading"' + (flash?.kind === 'error' ? ' open' : '') + '>',
+  '<form class="card stack" action="/" method="post">',
+  '<div class="section-heading"><div><p class="eyebrow">Import</p><h2 id="import-heading">Bring in a recipe</h2><p class="muted">Paste a recipe URL and we’ll add it to the box for review.</p></div><button class="button quiet icon" type="button" data-close-import aria-label="Close import dialog">×</button></div>',
+  '<div class="field"><label for="import-url">Recipe URL</label><input id="import-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://marleyspoon.com.au/menu/…" value="' + escapeHtml(flash?.url || '') + '" required></div>',
+  '<div class="actions"><button class="button secondary" type="button" data-close-import>Cancel</button><button class="button" type="submit">Import recipe ↗</button></div>',
+  flash?.kind === 'error'
+    ? '<div class="notice warning import-status" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>'
     : '',
-  '</form>'
+  '</form>',
+  '</dialog>'
 ].join('');
 
 const page = (recipes: RecipeRow[], flash?: Flash) => [
@@ -249,16 +255,37 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">▤</span> Recipes</a></nav>',
   '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
   '<main id="main">',
-  '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Recipes</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
-  importForm(flash),
+  '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Recipes</li></ol></nav><label class="mode-toggle toggle"><span>Adult</span><input type="checkbox" role="switch" data-kid-mode aria-controls="recipe-results" aria-label="Kid mode"><span>Kid</span></label></header>',
+  flash?.kind === 'success'
+    ? '<div class="notice import-status" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>'
+    : '',
   '<section aria-labelledby="recipes-heading"><p class="eyebrow">The recipe box</p>',
   '<div class="section-heading"><div><h1 id="recipes-heading">Good things on repeat.</h1><p class="muted">Recipes ready for the table.</p></div>',
-  '<span class="badge success">' + recipes.length + ' available</span></div>',
+  '<div class="actions"><button class="button secondary" type="button" data-manage-recipes aria-controls="recipe-results" aria-pressed="false">Manage</button><button class="button" type="button" data-open-import aria-haspopup="dialog">Import</button></div></div>',
   recipes.length
     ? '<div class="recipe-grid" id="recipe-results">' + recipes.map(recipeCard).join('') + '</div>'
     : '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌕</span><h2>No recipes yet</h2><p>Import a recipe URL to get the first one in the box.</p></div>',
   '</section>',
-  '<footer>meals · local development</footer>',
+  importDialog(flash),
+  '<script>',
+  'const importDialog = document.getElementById("import-dialog");',
+  'document.querySelector("[data-open-import]")?.addEventListener("click", () => importDialog?.showModal());',
+  'document.querySelectorAll("[data-close-import]").forEach((button) => button.addEventListener("click", () => importDialog?.close()));',
+  'const randomizeUnderline = (element) => { const randomRadius = () => `${8 + Math.random() * 72}%`; const randomDirection = () => Math.random() < .5 ? -1 : 1; element.style.setProperty("--scribble-left-radius", randomRadius()); element.style.setProperty("--scribble-right-radius", randomRadius()); element.style.setProperty("--scribble-left-direction", randomDirection()); element.style.setProperty("--scribble-right-direction", randomDirection()); };',
+  'document.querySelectorAll("h1, .scribble").forEach(randomizeUnderline);',
+  'const manageButton = document.querySelector("[data-manage-recipes]");',
+  'const recipeResults = document.getElementById("recipe-results");',
+  'manageButton?.addEventListener("click", () => { const managing = manageButton.getAttribute("aria-pressed") !== "true"; manageButton.setAttribute("aria-pressed", String(managing)); recipeResults?.querySelectorAll(".recipe-delete-form").forEach((form) => { form.hidden = !managing; }); });',
+  'recipeResults?.addEventListener("submit", (event) => { if (event.target instanceof HTMLFormElement && event.target.classList.contains("recipe-delete-form") && !window.confirm("Delete this recipe?")) event.preventDefault(); });',
+  'const recipeCards = document.querySelectorAll(".recipe-card");',
+  'const randomTilt = (range) => Math.random() * range * 2 - range;',
+  'const setCardTilt = (card, degrees) => { card.style.setProperty("--recipe-base-tilt", `${degrees}deg`); card.style.setProperty("--recipe-tilt", `${degrees}deg`); };',
+  'let kidMode = false;',
+  'recipeCards.forEach((card) => { card.addEventListener("mouseenter", () => { if (!kidMode) return; const base = Number.parseFloat(card.style.getPropertyValue("--recipe-base-tilt")) || 0; card.style.setProperty("--recipe-tilt", `${base + randomTilt(7)}deg`); }); card.addEventListener("mouseleave", () => card.style.setProperty("--recipe-tilt", card.style.getPropertyValue("--recipe-base-tilt") || "0deg")); });',
+  'const kidSwitch = document.querySelector("[data-kid-mode]");',
+  'kidSwitch?.addEventListener("change", () => { kidMode = kidSwitch.checked; recipeCards.forEach((card) => setCardTilt(card, kidMode ? randomTilt(15) : 0)); });',
+  '</script>',
+  '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
   '</main></div></body></html>'
 ].join('');
 
@@ -384,6 +411,18 @@ app.post('/recipes/:recipeId/cooks/:cookId/delete', async (c) => {
   ).bind(cookId, recipeId).run();
   if (!result.success) return c.text('The cook could not be removed.', 500);
   return c.redirect('/recipes/' + encodeURIComponent(recipeId), 303);
+});
+
+app.post('/recipes/:recipeId/delete', async (c) => {
+  const recipeId = c.req.param('recipeId');
+  if (!/^[a-z0-9-]+:\d+$/.test(recipeId)) return c.notFound();
+  if (!(await getRecipe(c.env.DB, recipeId))) return c.notFound();
+  const result = await c.env.DB.prepare(
+    'DELETE FROM recipes WHERE id = ?'
+  ).bind(recipeId).run();
+  if (!result.success) return c.text('The recipe could not be deleted.', 500);
+  await c.env.MEDIA.delete('recipes/' + recipeId.replace(':', '/'));
+  return c.redirect('/', 303);
 });
 
 app.get('/', async (c) => {
