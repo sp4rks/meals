@@ -1,0 +1,24 @@
+/* Meals · warm, practical foundations */
+:root {
+  color-scheme: light;
+  --color-bg: #f7f6f2; --color-surface: #fffefa; --color-muted: #eeeee6;
+  --color-text: #29352c; --color-secondary: #60685e; --color-border: #dcded3;
+  --color-herb: #365f43; --color-herb-hover: #284b33; --color-herb-soft: #e8eee2;
+  --color-tomato: #ac4938; --color-tomato-soft: #f9eae4;
+  --color-paprika: #955427; --color-butter: #f5edcf; --color-berry: #794d66;
+  --color-success: var(--color-herb); --color-danger: #a23832; --color-danger-soft: #fceee9;
+  --color-warning: #785923; --color-info: #4c626b; --color-white: #fff;
+  --font-body: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: Georgia, 'Times New Roman', serif;
+  --text-xs: .75rem; --text-sm: .875rem; --text-base: 1rem; --text-lg: 1.125rem;
+  --text-xl: 1.375rem; --text-2xl: 1.75rem; --text-3xl: clamp(1.875rem, 3vw, 2.5rem);
+  --weight-normal: 400; --weight-medium: 500; --weight-semibold: 600; --weight-bold: 700;
+  --leading-tight: 1.2; --leading-normal: 1.55; --leading-relaxed: 1.8;
+  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
+  --space-5: 1.25rem; --space-6: 1.5rem; --space-8: 2rem; --space-10: 2.5rem; --space-12: 3rem; --space-16: 4rem;
+  --radius-sm: .4rem; --radius-md: .75rem; --radius-lg: 1.125rem; --radius-pill: 999px;
+  --border: 1px solid var(--color-border); --shadow-sm: 0 2px 6px #29352c05;
+  --shadow-md: 0 8px 28px #29352c0c; --width-content: 1260px; --width-sidebar: 224px;
+  --width-form: 800px; --focus-ring: 3px solid #aa602d; --focus-offset: 3px;
+  --duration-fast: 140ms; --duration-normal: 240ms; --ease: ease-out;
+}
