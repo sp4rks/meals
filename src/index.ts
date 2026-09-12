@@ -1,4 +1,6 @@
+import { validateSmashInput, validateSmashRecipe, type SmashRecipe } from './train-smash';
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import {
   extract as extractRecipe,
   parseRecipeUrl
@@ -94,7 +96,20 @@ type Flash = {
   url?: string;
 };
 
-const app = new Hono<{ Bindings: Env }>();
+type UserRole = 'kid' | 'parent';
+
+type AuthUser = {
+  id: number;
+  name: string;
+  role: UserRole;
+};
+
+type AppEnv = {
+  Bindings: Env & { TRAIN_SMASH_URL?: string; TRAIN_SMASH_TOKEN?: string };
+  Variables: { user: AuthUser | null };
+};
+
+const app = new Hono<AppEnv>();
 
 const escapeHtml = (value: string) =>
   value.replace(/[&<>"']/g, (character) => ({
@@ -112,6 +127,123 @@ const validRecipeId = (value: string) => /^[a-z0-9-]+:[a-z0-9._-]+$/i.test(value
 const normalizeIngredientName = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
 const formString = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+
+const bytesToBase64 = (bytes: Uint8Array) => {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
+
+const base64ToBytes = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+
+const bytesEqual = (left: Uint8Array, right: Uint8Array) => {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) difference |= left[index] ^ right[index];
+  return difference === 0;
+};
+
+const hashPassword = async (password: string) => {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iterations = 100_000;
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, 256);
+  return 'pbkdf2$' + iterations + '$' + bytesToBase64(salt) + '$' + bytesToBase64(new Uint8Array(bits));
+};
+
+const verifyPassword = async (password: string, stored: string) => {
+  const [algorithm, rawIterations, rawSalt, rawHash] = stored.split('$');
+  const iterations = Number(rawIterations);
+  if (algorithm !== 'pbkdf2' || !Number.isInteger(iterations) || iterations < 1 || !rawSalt || !rawHash) return false;
+  try {
+    const salt = base64ToBytes(rawSalt);
+    const expected = base64ToBytes(rawHash);
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, expected.length * 8);
+    return bytesEqual(new Uint8Array(bits), expected);
+  } catch {
+    return false;
+  }
+};
+
+const hashToken = async (token: string) => bytesToBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))));
+
+const newToken = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+};
+
+const validUserName = (value: string) => value.length >= 1 && value.length <= 80 && !/[\u0000-\u001f\u007f]/.test(value);
+const validPassword = (value: string) => value.length >= 8 && value.length <= 200;
+const userRole = (value: unknown): UserRole | null => value === 'kid' || value === 'parent' ? value : null;
+
+const sessionCookie = (requestUrl: string, token: string, maxAge = 60 * 60 * 24 * 30) => {
+  const secure = new URL(requestUrl).protocol === 'https:' ? '; Secure' : '';
+  return 'session=' + token + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge + secure;
+};
+
+const requestSessionToken = (request: Request) => {
+  const cookie = request.headers.get('Cookie') || '';
+  return cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('session='))?.slice('session='.length) || '';
+};
+
+const userCount = async (db: D1Database) => (await db.prepare('SELECT COUNT(*) AS count FROM users').first<{ count: number }>())?.count || 0;
+
+const currentUser = async (request: Request, db: D1Database) => {
+  const token = requestSessionToken(request);
+  if (!token) return null;
+  return db.prepare([
+    'SELECT users.id, users.name, users.role FROM sessions JOIN users ON users.id = sessions.user_id',
+    'WHERE sessions.token_hash = ? AND sessions.expires_at > CURRENT_TIMESTAMP'
+  ].join(' ')).bind(await hashToken(token)).first<AuthUser>();
+};
+
+const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (!c.get('user')) return c.redirect('/login?next=' + encodeURIComponent(new URL(c.req.url).pathname), 303);
+  await next();
+};
+
+const requireParent: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const user = c.get('user');
+  if (!user) return c.redirect('/login?next=' + encodeURIComponent(new URL(c.req.url).pathname), 303);
+  if (user.role !== 'parent') return c.text('Parents only.', 403);
+  await next();
+};
+
+app.use('*', async (c, next) => {
+  c.set('user', await currentUser(c.req.raw, c.env.DB));
+  await next();
+});
+
+const sidebar = (user: AuthUser, active: 'recipes' | 'ingredients' | 'train-smash' = 'recipes') => [
+  '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
+  '<nav aria-label="Main navigation" class="nav-links"><a class="' + (active === 'recipes' ? 'active' : '') + '" href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a class="' + (active === 'ingredients' ? 'active' : '') + '" href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a><a class="' + (active === 'train-smash' ? 'active' : '') + '" href="/train-smash"><span class="nav-icon" aria-hidden="true">🚂</span> Train Smash</a></nav>',
+  '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p></div>',
+  '<details class="sidebar-account"><summary class="sidebar-user"><span class="avatar" aria-hidden="true">' + escapeHtml(user.name.slice(0, 1).toUpperCase()) + '</span><span class="sidebar-user-copy"><strong>' + escapeHtml(user.name) + '</strong><small>' + escapeHtml(user.role === 'parent' ? 'Parent · Settings' : 'Kid · Settings') + '</small></span><span aria-hidden="true">⚙</span></summary><div class="sidebar-menu"><a class="button quiet sidebar-settings" href="/settings">Settings</a><form action="/logout" method="post"><button class="button quiet sidebar-signout" type="submit">Sign out</button></form></div></details></aside>'
+].join('');
+
+const loginPage = (setup: boolean, error = '', next = '/') => [
+  '<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+  '<meta name="theme-color" content="#365f43"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>' + (setup ? 'Set up meals' : 'Log in') + ' — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css"></head>',
+  '<body><main class="auth-page"><div class="auth-card card"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a><p class="eyebrow">' + (setup ? 'First things first' : 'Welcome back') + '</p><h1>' + (setup ? 'Set up your household.' : 'Log in to meals.') + '</h1><p class="muted">' + (setup ? 'Create the first parent account to get started.' : 'Your shared recipe box is just inside.') + '</p>',
+  error ? '<div class="notice warning" role="alert">' + escapeHtml(error) + '</div>' : '',
+  '<form class="stack spaced" action="' + (setup ? '/setup' : '/login') + '" method="post">' + (setup ? '' : '<input type="hidden" name="next" value="' + escapeHtml(next) + '">') + '<div class="field"><label for="login-name">Name</label><input id="login-name" name="name" autocomplete="username" required maxlength="80"></div><div class="field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="8"></div><button class="button" type="submit">' + (setup ? 'Create parent account' : 'Log in') + '</button></form>',
+  '</div></main></body></html>'
+].join('');
+
+const settingsPage = (user: AuthUser, error = '', success = '', userError = '') => [
+  '<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+  '<meta name="theme-color" content="#365f43"><meta name="description" content="Account settings."><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Settings — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css"></head>',
+  '<body><a class="skip-link" href="#main">Skip to content</a><div class="app-shell">',
+  sidebar(user),
+  '<main id="main"><header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Settings</li></ol></nav><span class="avatar" aria-label="' + escapeHtml(user.name) + '">' + escapeHtml(user.name.slice(0, 1).toUpperCase()) + '</span></header>',
+  '<section aria-labelledby="settings-heading"><p class="eyebrow">Your account</p><div class="section-heading"><div><h1 id="settings-heading">Make it yours.</h1><p class="muted">Update your name or password.</p></div></div>',
+  error ? '<div class="notice warning" role="alert">' + escapeHtml(error) + '</div>' : '',
+  success ? '<div class="notice" role="status">' + escapeHtml(success) + '</div>' : '',
+  '<form class="card stack settings-form" action="/settings" method="post"><div class="field"><label for="settings-name">Name</label><input id="settings-name" name="name" maxlength="80" value="' + escapeHtml(user.name) + '" required autocomplete="username"></div><fieldset class="stack"><legend>Change password</legend><p class="help">Leave these blank if you only want to change your name.</p><div class="field"><label for="current-password">Current password</label><input id="current-password" name="current_password" type="password" autocomplete="current-password"></div><div class="field"><label for="new-password">New password</label><input id="new-password" name="new_password" type="password" minlength="8" autocomplete="new-password"></div><div class="field"><label for="confirm-password">Confirm new password</label><input id="confirm-password" name="confirm_password" type="password" minlength="8" autocomplete="new-password"></div></fieldset><div class="actions"><a class="button secondary" href="/">Cancel</a><button class="button" type="submit">Save changes</button></div></form></section>',
+  user.role === 'parent' ? '<section class="settings-form spaced" aria-labelledby="new-user-heading"><p class="eyebrow">Household access</p><div class="section-heading"><div><h2 id="new-user-heading">Add someone to meals.</h2><p class="muted">Create another adult or kid account.</p></div></div>' + (userError ? '<div class="notice warning" role="alert">' + escapeHtml(userError) + '</div>' : '') + '<form class="card stack" action="/users" method="post"><div class="field"><label for="new-user-name">Name</label><input id="new-user-name" name="name" maxlength="80" required autocomplete="username"></div><div class="field"><label for="new-user-role">Role</label><select id="new-user-role" name="role" required><option value="kid">Kid</option><option value="parent">Adult</option></select></div><div class="field"><label for="new-user-password">Password</label><input id="new-user-password" name="password" type="password" minlength="8" maxlength="200" required autocomplete="new-password"></div><button class="button" type="submit">Create user</button></form></section>' : '',
+  '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer></main></div></body></html>'
+].join('');
 
 const reviewStorage = (value: unknown) => value === 'pantry' || value === 'refrigerator' || value === 'freezer' ? value : null;
 
@@ -154,26 +286,26 @@ const formatPurchase = (ingredient: IngredientRow) => ingredient.purchase_quanti
   ? '—'
   : ingredient.purchase_quantity + ' ' + ingredient.purchase_unit;
 
-const ingredientTable = (ingredients: IngredientRow[]) => ingredients.length
-  ? '<div class="card"><div class="table-wrap"><table><caption class="sr-only">Ingredient catalogue</caption><thead><tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Unit</th><th scope="col">Purchase</th><th scope="col">Woolworths</th><th scope="col">Storage</th><th scope="col">Enrichment</th><th scope="col">Actions</th></tr></thead><tbody>' + ingredients.map((ingredient) => {
+const ingredientTable = (ingredients: IngredientRow[], editable: boolean) => ingredients.length
+  ? '<div class="card"><div class="table-wrap"><table><caption class="sr-only">Ingredient catalogue</caption><thead><tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Unit</th><th scope="col">Purchase</th><th scope="col">Woolworths</th><th scope="col">Storage</th><th scope="col">Enrichment</th>' + (editable ? '<th scope="col">Actions</th>' : '') + '</tr></thead><tbody>' + ingredients.map((ingredient) => {
       const [status, badge] = formatEnrichmentStatus(ingredient.enrichment_status);
-      const enrichment = ingredient.enrichment_status === 'needs_review'
+      const enrichment = editable && ingredient.enrichment_status === 'needs_review'
         ? '<button class="ingredient-review-trigger help" type="button"' + ingredientTriggerData(ingredient) + '>' + escapeHtml(ingredient.enrichment_notes || 'Review ingredient') + '</button>'
         : '<span class="badge ' + badge + '">' + status + '</span>';
       const product = ingredient.woolworths_url
         ? '<a href="' + escapeHtml(ingredient.woolworths_url) + '">Open product</a>'
         : '—';
-      const edit = '<button class="button quiet" type="button"' + ingredientTriggerData(ingredient) + ' aria-label="Edit ' + escapeHtml(ingredient.name) + '">Edit</button>';
-      return '<tr><td data-label="Name"><strong>' + escapeHtml(ingredient.name) + '</strong></td><td data-label="Category">' + escapeHtml(ingredient.category || '—') + '</td><td data-label="Unit">' + escapeHtml(ingredient.default_unit || '—') + '</td><td data-label="Purchase">' + escapeHtml(formatPurchase(ingredient)) + '</td><td data-label="Woolworths">' + product + '</td><td data-label="Storage">' + escapeHtml(ingredient.storage_location || '—') + '</td><td data-label="Enrichment">' + enrichment + '</td><td class="ingredient-table-actions" data-label="Actions">' + edit + '</td></tr>';
+      const edit = editable ? '<td class="ingredient-table-actions" data-label="Actions"><button class="button quiet" type="button"' + ingredientTriggerData(ingredient) + ' aria-label="Edit ' + escapeHtml(ingredient.name) + '">Edit</button></td>' : '';
+      return '<tr><td data-label="Name"><strong>' + escapeHtml(ingredient.name) + '</strong></td><td data-label="Category">' + escapeHtml(ingredient.category || '—') + '</td><td data-label="Unit">' + escapeHtml(ingredient.default_unit || '—') + '</td><td data-label="Purchase">' + escapeHtml(formatPurchase(ingredient)) + '</td><td data-label="Woolworths">' + product + '</td><td data-label="Storage">' + escapeHtml(ingredient.storage_location || '—') + '</td><td data-label="Enrichment">' + enrichment + '</td>' + edit + '</tr>';
     }).join('') + '</tbody></table></div></div>'
   : '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌁</span><h2>No ingredients yet</h2><p>Ingredients will appear here when recipes are imported.</p></div>';
 
-const recipeCard = (recipe: RecipeSummary) => [
+const recipeCard = (recipe: RecipeSummary, editable = true) => [
   '<article class="card recipe-card">',
   '<div class="recipe-card-hero">',
   recipe.image_url
-    ? '<a class="recipe-card-image-link" href="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for images of ' + escapeHtml(recipe.title) + '"><div class="meal-art"><img class="recipe-image" src="' + escapeHtml(recipe.image_url) + '" alt="" loading="lazy" decoding="async"></div></a>'
-    : '<div class="meal-art butter recipe-image-placeholder"><a class="recipe-card-image-link" href="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for images of ' + escapeHtml(recipe.title) + '"><span>something good</span></a><a class="button secondary recipe-image-add" href="' + recipePath(recipe) + '" data-image-search-url="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" aria-label="Add an image to ' + escapeHtml(recipe.title) + '">Add Image</a></div>',
+    ? '<a class="recipe-card-image-link" href="' + recipePath(recipe) + '" aria-label="Open ' + escapeHtml(recipe.title) + '"><div class="meal-art"><img class="recipe-image" src="' + escapeHtml(recipe.image_url) + '" alt="" loading="lazy" decoding="async"></div></a>'
+    : '<div class="meal-art butter recipe-image-placeholder"><a class="recipe-card-image-link" href="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for images of ' + escapeHtml(recipe.title) + '"><span>something good</span></a>' + (editable ? '<a class="button secondary recipe-image-add" href="' + recipePath(recipe) + '" data-image-search-url="' + escapeHtml(recipeImageSearchUrl(recipe.title)) + '" aria-label="Add an image to ' + escapeHtml(recipe.title) + '">Add Image</a>' : '') + '</div>',
   '</div>',
   '<div class="recipe-body">',
   '<div class="row"><h2><a href="' + recipePath(recipe) + '">' + escapeHtml(recipe.title) + '</a></h2></div>',
@@ -216,7 +348,8 @@ const formatCookedAt = (value: string) => {
     : new Intl.DateTimeFormat('en-AU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Australia/Melbourne' }).format(date);
 };
 
-const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[], error = '') => {
+const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[], user: AuthUser, error = '') => {
+  const canEdit = user.role === 'parent';
   const ingredients = parseJson<RecipeIngredient[]>(recipe.ingredients_json, []);
   const steps = parseJson<Array<{ title: string; text: string }>>(recipe.steps_json, []);
   const macros = parseJson<{ perServing: RecipeMacros }>(recipe.macros_json, { perServing: { kcal: null, protein: null, carbs: null, fat: null } });
@@ -254,14 +387,12 @@ const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[], error = '') =>
     '<body>',
     '<a class="skip-link" href="#main">Skip to content</a>',
     '<div class="app-shell">',
-    '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
-    '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a></nav>',
-    '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
+    sidebar(user),
     '<main id="main">',
     '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li><a href="/">Recipes</a></li><li>' + escapeHtml(recipe.title) + '</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
     '<section aria-labelledby="recipe-heading">',
     error ? '<div class="notice warning" role="alert">' + escapeHtml(error) + '</div>' : '',
-    '<div class="section-heading"><div><p class="eyebrow">Recipe · ' + escapeHtml(recipe.source.replace('-', ' ')) + '</p><h1 id="recipe-heading">' + escapeHtml(recipe.title) + '</h1>' + (recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '') + '<p class="muted spaced">' + escapeHtml(recipe.description) + '</p>' + (tags.length ? '<div class="tags">' + tags.map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>' : '') + '</div><div class="actions recipe-page-actions"><button class="button secondary" type="button" data-open-recipe-edit>Edit</button><a class="button secondary" href="/">← All recipes</a></div></div>',
+    '<div class="section-heading"><div><p class="eyebrow">Recipe · ' + escapeHtml(recipe.source.replace('-', ' ')) + '</p><h1 id="recipe-heading">' + escapeHtml(recipe.title) + '</h1>' + (recipe.subtitle ? '<p class="recipe-subtitle">' + escapeHtml(recipe.subtitle) + '</p>' : '') + '<p class="muted spaced">' + escapeHtml(recipe.description) + '</p>' + (tags.length ? '<div class="tags">' + tags.map((tag) => '<span class="tag">' + escapeHtml(tag) + '</span>').join('') + '</div>' : '') + '</div><div class="actions recipe-page-actions">' + (canEdit ? '<button class="button secondary" type="button" data-open-recipe-edit>Edit</button>' : '') + '<a class="button secondary" href="/">← All recipes</a></div></div>',
     '<div class="recipe-detail-grid">',
     '<div class="stack recipe-detail-main">',
     '<article class="card recipe-hero-card">',
@@ -296,14 +427,14 @@ const recipeDetailPage = (recipe: RecipeRow, cooks: CookRecord[], error = '') =>
     '</div>',
     '<section class="card recipe-detail-panel cook-history" aria-labelledby="cook-history-heading"><div class="section-heading"><h2 id="cook-history-heading">Recent Cooks</h2></div>',
     cooks.length
-      ? '<ol class="cook-history-list">' + cooks.map((cook) => '<li class="cook-history-row"><time datetime="' + escapeHtml(cook.cooked_at) + '">' + escapeHtml(formatCookedAt(cook.cooked_at)) + '</time><form class="cook-history-remove" action="' + recipePath(recipe) + '/cooks/' + cook.id + '/delete" method="post"><button class="button quiet" type="submit" aria-label="Remove cook from ' + escapeHtml(formatCookedAt(cook.cooked_at)) + '">Remove</button></form></li>').join('') + '</ol>'
+      ? '<ol class="cook-history-list">' + cooks.map((cook) => '<li class="cook-history-row"><time datetime="' + escapeHtml(cook.cooked_at) + '">' + escapeHtml(formatCookedAt(cook.cooked_at)) + '</time>' + (canEdit ? '<form class="cook-history-remove" action="' + recipePath(recipe) + '/cooks/' + cook.id + '/delete" method="post"><button class="button quiet" type="submit" aria-label="Remove cook from ' + escapeHtml(formatCookedAt(cook.cooked_at)) + '">Remove</button></form>' : '') + '</li>').join('') + '</ol>'
       : '<p class="muted">No cooks recorded yet.</p>',
     '</section>',
-    '<form class="cook-action" action="' + recipePath(recipe) + '/cook" method="post"><button class="button" type="submit">I just cooked this!</button></form>',
+    canEdit ? '<form class="cook-action" action="' + recipePath(recipe) + '/cook" method="post"><button class="button" type="submit">I just cooked this!</button></form>' : '',
     '</div>',
     '</div>',
     '</section>',
-    recipeEditDialog(recipe, Boolean(error)),
+    canEdit ? recipeEditDialog(recipe, Boolean(error)) : '',
     '<script>const recipeEditDialogElement = document.getElementById("recipe-edit-dialog"); document.querySelector("[data-open-recipe-edit]")?.addEventListener("click", () => recipeEditDialogElement?.showModal()); document.querySelectorAll("[data-close-recipe-edit]").forEach((button) => button.addEventListener("click", () => recipeEditDialogElement?.close())); const imageUrl = document.getElementById("recipe-image-url"); document.querySelector("[data-replace-image]")?.addEventListener("click", () => { const value = window.prompt("HTTPS image URL", imageUrl?.value || ""); if (value !== null && imageUrl) imageUrl.value = value.trim(); }); recipeEditDialogElement?.querySelector("form")?.addEventListener("submit", (event) => { if (event.submitter instanceof HTMLButtonElement && event.submitter.hasAttribute("data-delete-recipe") && !window.confirm("Delete this recipe? This cannot be undone.")) event.preventDefault(); });</script>',
     '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
     '</main></div></body></html>'
@@ -323,7 +454,7 @@ const importDialog = (flash?: Flash) => [
   '</dialog>'
 ].join('');
 
-const page = (recipes: RecipeRow[], flash?: Flash) => [
+const page = (recipes: RecipeRow[], user: AuthUser, flash?: Flash) => [
   '<!doctype html>',
   '<html lang="en-AU">',
   '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -333,9 +464,7 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
   '<body>',
   '<a class="skip-link" href="#main">Skip to content</a>',
   '<div class="app-shell">',
-  '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
-  '<nav aria-label="Main navigation" class="nav-links"><a class="active" href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a></nav>',
-  '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
+  sidebar(user),
   '<main id="main">',
   '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Recipes</li></ol></nav><label class="mode-toggle toggle"><span>Adult</span><input type="checkbox" role="switch" data-kid-mode aria-controls="recipe-results" aria-label="Kid mode"><span>Kid</span></label></header>',
   flash?.kind === 'success'
@@ -343,12 +472,12 @@ const page = (recipes: RecipeRow[], flash?: Flash) => [
     : '',
   '<section aria-labelledby="recipes-heading"><p class="eyebrow">The recipe box</p>',
   '<div class="section-heading"><div><h1 id="recipes-heading">Good things on repeat.</h1><p class="muted">Recipes ready for the table.</p></div>',
-  '<div class="actions"><button class="button" type="button" data-open-import aria-haspopup="dialog">Import</button></div></div>',
+  user.role === 'parent' ? '<div class="actions"><button class="button" type="button" data-open-import aria-haspopup="dialog">Import</button></div>' : '', '</div>',
   recipes.length
-    ? '<div class="recipe-grid" id="recipe-results">' + recipes.map(recipeCard).join('') + '</div>'
+    ? '<div class="recipe-grid" id="recipe-results">' + recipes.map((recipe) => recipeCard(recipe, user.role === 'parent')).join('') + '</div>'
     : '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌕</span><h2>No recipes yet</h2><p>Import a recipe URL to get the first one in the box.</p></div>',
   '</section>',
-  importDialog(flash),
+  user.role === 'parent' ? importDialog(flash) : '',
   '<script>',
   'const importDialog = document.getElementById("import-dialog");',
   'document.querySelector("[data-open-import]")?.addEventListener("click", () => importDialog?.showModal());',
@@ -410,7 +539,7 @@ const ingredientReviewDialog = () => [
   '</script>'
 ].join('');
 
-const ingredientsPage = (ingredients: IngredientRow[], flash?: Flash) => [
+const ingredientsPage = (ingredients: IngredientRow[], user: AuthUser, flash?: Flash) => [
   '<!doctype html>',
   '<html lang="en-AU">',
   '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -420,17 +549,15 @@ const ingredientsPage = (ingredients: IngredientRow[], flash?: Flash) => [
   '<body>',
   '<a class="skip-link" href="#main">Skip to content</a>',
   '<div class="app-shell">',
-  '<aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">m.</span><span>meals<small>A little less chaos</small></span></a>',
-  '<nav aria-label="Main navigation" class="nav-links"><a href="/"><span class="nav-icon" aria-hidden="true">📃</span> Recipes</a><a class="active" href="/ingredients"><span class="nav-icon" aria-hidden="true">🥕</span> Ingredients</a></nav>',
-  '<div class="sidebar-note"><p>Good food.<br><span class="scribble">Less figuring it out.</span></p><small class="muted">Our household · Private by nature.</small></div></aside>',
+  sidebar(user, 'ingredients'),
   '<main id="main">',
-  '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Ingredients</li></ol></nav><span class="avatar" aria-label="Our household">H</span></header>',
+  '<header class="topbar"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li>Our household</li><li>Ingredients</li></ol></nav></header>',
   flash ? '<div class="toast ' + (flash.kind === 'error' ? 'error' : '') + '" role="status" aria-live="polite">' + escapeHtml(flash.message) + '</div>' : '',
   '<section aria-labelledby="ingredients-heading"><p class="eyebrow">Ingredient catalogue</p>',
   '<div class="section-heading"><div><h1 id="ingredients-heading">The things we cook with.</h1><p class="muted">Shared ingredients across the recipe box.</p></div></div>',
-  ingredientTable(ingredients),
+  ingredientTable(ingredients, user.role === 'parent'),
   '</section>',
-  ingredientReviewDialog(),
+  user.role === 'parent' ? ingredientReviewDialog() : '',
   '<footer>meals.chaos.haus · © ' + new Date().getFullYear() + '</footer>',
   '</main></div></body></html>'
 ].join('');
@@ -486,13 +613,14 @@ const saveRecipe = async (
   db: D1Database,
   candidate: ImportCandidate,
   imageUrl: string,
-  sourceImageUrl: string
+  sourceImageUrl: string,
+  keepExisting = false
 ) => {
   const status = importStatus(candidate);
   const result = await db.prepare([
     'INSERT INTO recipes (id, source, source_id, source_url, title, subtitle, description, cook_time_from, cook_time_to, cook_time_unit, difficulty, macros_json, allergens_json, tags_json, image_url, source_image_url, ingredients_json, steps_json, status, updated_at)',
     'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
-    'ON CONFLICT(id) DO UPDATE SET source_url = excluded.source_url, title = excluded.title, subtitle = excluded.subtitle, description = excluded.description, cook_time_from = excluded.cook_time_from, cook_time_to = excluded.cook_time_to, cook_time_unit = excluded.cook_time_unit, difficulty = excluded.difficulty, macros_json = excluded.macros_json, allergens_json = excluded.allergens_json, tags_json = excluded.tags_json, image_url = excluded.image_url, source_image_url = excluded.source_image_url, ingredients_json = excluded.ingredients_json, steps_json = excluded.steps_json, status = excluded.status, updated_at = CURRENT_TIMESTAMP'
+    keepExisting ? 'ON CONFLICT(id) DO NOTHING' : 'ON CONFLICT(id) DO UPDATE SET source_url = excluded.source_url, title = excluded.title, subtitle = excluded.subtitle, description = excluded.description, cook_time_from = excluded.cook_time_from, cook_time_to = excluded.cook_time_to, cook_time_unit = excluded.cook_time_unit, difficulty = excluded.difficulty, macros_json = excluded.macros_json, allergens_json = excluded.allergens_json, tags_json = excluded.tags_json, image_url = excluded.image_url, source_image_url = excluded.source_image_url, ingredients_json = excluded.ingredients_json, steps_json = excluded.steps_json, status = excluded.status, updated_at = CURRENT_TIMESTAMP'
   ].join(' ')).bind(
     candidate.source.site + ':' + candidate.source.id,
     candidate.source.site,
@@ -518,9 +646,180 @@ const saveRecipe = async (
   return status;
 };
 
+const safeNext = (value: string) => value.startsWith('/') && !value.startsWith('//') ? value : '/';
+
+app.get('/login', async (c) => {
+  if (c.get('user')) return c.redirect('/', 303);
+  return c.html(loginPage((await userCount(c.env.DB)) === 0, '', safeNext(c.req.query('next') || '/')));
+});
+
+app.post('/login', async (c) => {
+  if (c.get('user')) return c.redirect('/', 303);
+  const body = await c.req.parseBody();
+  const name = formString(body.name);
+  const password = typeof body.password === 'string' ? body.password : '';
+  const account = await c.env.DB.prepare(
+    'SELECT id, name, role, password_hash FROM users WHERE name = ? COLLATE NOCASE'
+  ).bind(name).first<AuthUser & { password_hash: string }>();
+  if (!account || !(await verifyPassword(password, account.password_hash))) {
+    return c.html(loginPage(false, 'That name and password do not match.', safeNext(formString(body.next) || '/')), 401);
+  }
+  const token = newToken();
+  await c.env.DB.prepare(
+    "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))"
+  ).bind(await hashToken(token), account.id).run();
+  c.header('Set-Cookie', sessionCookie(c.req.url, token));
+  return c.redirect(safeNext(formString(body.next) || '/'), 303);
+});
+
+app.post('/setup', async (c) => {
+  if (await userCount(c.env.DB)) return c.redirect('/login', 303);
+  const body = await c.req.parseBody();
+  const name = formString(body.name);
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!validUserName(name)) return c.html(loginPage(true, 'Choose a name between 1 and 80 characters.'), 400);
+  if (!validPassword(password)) return c.html(loginPage(true, 'Use a password between 8 and 200 characters.'), 400);
+  const result = await c.env.DB.prepare(
+    'INSERT INTO users (name, role, password_hash) VALUES (?, ?, ?)'
+  ).bind(name, 'parent', await hashPassword(password)).run();
+  if (!result.success) return c.html(loginPage(true, 'The parent account could not be created.'), 500);
+  return c.redirect('/login', 303);
+});
+
+app.post('/logout', requireAuth, async (c) => {
+  const token = requestSessionToken(c.req.raw);
+  if (token) await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(await hashToken(token)).run();
+  c.header('Set-Cookie', sessionCookie(c.req.url, '', 0));
+  return c.redirect('/login', 303);
+});
+
+app.get('/settings', requireAuth, async (c) => {
+  return c.html(settingsPage(c.get('user')!, '', c.req.query('saved') ? 'Settings saved.' : c.req.query('user') === 'created' ? 'User created.' : ''));
+});
+
+app.post('/users', requireParent, async (c) => {
+  const currentUser = c.get('user')!;
+  const body = await c.req.parseBody();
+  const name = formString(body.name);
+  const password = typeof body.password === 'string' ? body.password : '';
+  const role = userRole(body.role);
+  if (!validUserName(name)) return c.html(settingsPage(currentUser, '', '', 'Choose a name between 1 and 80 characters.'), 400);
+  if (!role) return c.html(settingsPage(currentUser, '', '', 'Choose Adult or Kid as the role.'), 400);
+  if (!validPassword(password)) return c.html(settingsPage(currentUser, '', '', 'Use a password between 8 and 200 characters.'), 400);
+  const duplicate = await c.env.DB.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE').bind(name).first<{ id: number }>();
+  if (duplicate) return c.html(settingsPage(currentUser, '', '', 'That name is already in use.'), 400);
+  const result = await c.env.DB.prepare(
+    'INSERT INTO users (name, role, password_hash) VALUES (?, ?, ?)'
+  ).bind(name, role, await hashPassword(password)).run();
+  if (!result.success) return c.html(settingsPage(currentUser, '', '', 'The new user could not be created.'), 500);
+  return c.redirect('/settings?user=created', 303);
+});
+
+app.post('/settings', requireAuth, async (c) => {
+  const user = c.get('user')!;
+  const body = await c.req.parseBody();
+  const name = formString(body.name);
+  const currentPassword = typeof body.current_password === 'string' ? body.current_password : '';
+  const newPassword = typeof body.new_password === 'string' ? body.new_password : '';
+  const confirmPassword = typeof body.confirm_password === 'string' ? body.confirm_password : '';
+  if (!validUserName(name)) return c.html(settingsPage(user, 'Choose a name between 1 and 80 characters.'), 400);
+  const duplicate = await c.env.DB.prepare(
+    'SELECT id FROM users WHERE name = ? COLLATE NOCASE AND id != ?'
+  ).bind(name, user.id).first<{ id: number }>();
+  if (duplicate) return c.html(settingsPage(user, 'That name is already in use.'), 400);
+
+  let passwordHash = '';
+  if (currentPassword || newPassword || confirmPassword) {
+    if (!validPassword(newPassword) || newPassword !== confirmPassword) {
+      return c.html(settingsPage(user, 'New passwords must match and be between 8 and 200 characters.'), 400);
+    }
+    const account = await c.env.DB.prepare('SELECT password_hash FROM users WHERE id = ?').bind(user.id).first<{ password_hash: string }>();
+    if (!account || !(await verifyPassword(currentPassword, account.password_hash))) {
+      return c.html(settingsPage(user, 'Your current password is not correct.'), 400);
+    }
+    passwordHash = await hashPassword(newPassword);
+  }
+
+  const result = await c.env.DB.prepare(
+    passwordHash ? 'UPDATE users SET name = ?, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?' : 'UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+  ).bind(...(passwordHash ? [name, passwordHash, user.id] : [name, user.id])).run();
+  if (!result.success) return c.text('Your settings could not be saved.', 500);
+  return c.redirect('/settings?saved=1', 303);
+});
+
+type SmashDraft = { id: string; input_json: string; recipe_json: string; created_at: string };
+const smashPath = (id: string) => '/train-smash/' + encodeURIComponent(id);
+const smashPage = (user: AuthUser, drafts: SmashDraft[], draft?: SmashDraft, error = '', input = { ingredients: '', servings: 2, preferences: '' }, saved = false) => {
+  const recipe = draft ? validateSmashRecipe(JSON.parse(draft.recipe_json)) : null;
+  return [
+    '<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Train Smash — meals</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/components.css"></head><body><a class="skip-link" href="#main">Skip to content</a><div class="app-shell">',
+    sidebar(user, 'train-smash'),
+    '<main id="main"><header class="topbar"><span class="breadcrumbs">Our household / Train Smash</span></header><section class="stack" aria-labelledby="smash-heading"><div><p class="eyebrow">A little mish mash. Something good.</p><h1 id="smash-heading">🚂 Train Smash</h1><p class="muted spaced">Odds, ends, and whatever’s in the fridge. Let’s make dinner out of it.</p></div>',
+    error ? '<p class="notice warning" role="alert">' + escapeHtml(error) + '</p>' : '',
+    '<form class="card stack" action="/train-smash" method="post" data-smash-form><div class="field"><label for="smash-ingredients">What have you got?</label><textarea id="smash-ingredients" name="ingredients" rows="5" maxlength="4000" required aria-describedby="smash-help" placeholder="2 eggs, half a zucchini, leftover rice, a handful of cheese…">' + escapeHtml(input.ingredients) + '</textarea><p class="help" id="smash-help">Include rough amounts and any basics you have, like oil, salt, or spices.</p></div><div class="field"><label for="smash-servings">How many are eating?</label><input id="smash-servings" name="servings" type="number" min="1" max="12" value="' + input.servings + '" required></div><div class="field"><label for="smash-preferences">Dietary needs or anything to avoid <span class="muted">(optional)</span></label><textarea id="smash-preferences" name="preferences" rows="2" maxlength="1000" placeholder="No nuts, vegetarian, keep it mild…">' + escapeHtml(input.preferences) + '</textarea></div><div class="actions"><button class="button" type="submit">Make something of it</button><p class="help" role="status" data-smash-status>We’ll suggest one recipe. Keep it only if you love it.</p></div></form>',
+    recipe && draft ? '<article class="card stack" aria-labelledby="suggestion-heading"><div><p class="eyebrow">AI-created · ' + (saved ? 'In your rotation' : 'Not yet in your rotation') + '</p><h2 id="suggestion-heading">' + escapeHtml(recipe.title) + '</h2><p class="spaced">' + escapeHtml(recipe.description) + '</p><p class="help">Serves ' + recipe.servings + ' · About ' + recipe.minutes + ' minutes</p></div><div class="recipe-detail-grid"><div><h3>Ingredients</h3><ul class="recipe-ingredients">' + recipe.ingredients.map((ingredient) => '<li>' + escapeHtml(ingredient) + '</li>').join('') + '</ul></div><div><h3>Let’s cook</h3><ol class="instructions">' + recipe.steps.map((step) => '<li><p>' + escapeHtml(step) + '</p></li>').join('') + '</ol></div></div><p class="notice">' + escapeHtml(recipe.notes) + '</p><p class="help">AI-created recipe. Check it makes sense for your ingredients and dietary needs before cooking.</p>' + (saved ? '<a class="button secondary" href="/recipes/train-smash:' + draft.id + '">In your rotation → View recipe</a>' : user.role === 'parent' ? '<form class="stack" action="' + smashPath(draft.id) + '/save" method="post"><label class="choice"><input type="checkbox" name="tried" value="yes" required><span>We tried it and liked it.</span></label><button class="button" type="submit">Add to rotation</button></form>' : '<p class="help">Liked it? Ask a parent to add it to the rotation.</p>') + '</article>' : '',
+    '<section class="card stack" aria-labelledby="recent-smashes"><h2 id="recent-smashes">Your recent smashes</h2><p class="help">Come back after dinner to save a keeper.</p>' + (drafts.length ? '<ul>' + drafts.map((item) => '<li><a href="' + smashPath(item.id) + '">' + escapeHtml(validateSmashRecipe(JSON.parse(item.recipe_json)).title) + '</a></li>').join('') + '</ul>' : '<p class="muted">Your first idea starts with what you’ve got.</p>') + '</section></section></main></div>',
+    '<script>document.querySelector("[data-smash-form]").addEventListener("submit",function(){this.querySelector("button").disabled=true;this.setAttribute("aria-busy","true");this.querySelector("[data-smash-status]").textContent="Making something of it… This can take a couple of minutes."});window.addEventListener("pageshow",function(){var f=document.querySelector("[data-smash-form]");f.querySelector("button").disabled=false;f.removeAttribute("aria-busy")});</script></body></html>'
+  ].join('');
+};
+const listSmashes = async (db: D1Database, userId: number) => (await db.prepare('SELECT id, input_json, recipe_json, created_at FROM train_smashes WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 10').bind(userId).all<SmashDraft>()).results;
+const getSmash = async (db: D1Database, id: string, user: AuthUser) => db.prepare('SELECT id, input_json, recipe_json, created_at FROM train_smashes WHERE id = ? AND (user_id = ? OR ? = \'parent\')').bind(id, user.id, user.role).first<SmashDraft>();
+
+app.use('/train-smash*', requireAuth, async (c, next) => {
+  c.header('Cache-Control', 'no-store');
+  if (c.req.method === 'POST' && c.req.header('Origin') !== new URL(c.req.url).origin) return c.text('Please submit this form from meals.', 403);
+  await next();
+});
+app.get('/train-smash', async (c) => c.html(smashPage(c.get('user')!, await listSmashes(c.env.DB, c.get('user')!.id))));
+app.post('/train-smash', async (c) => {
+  const user = c.get('user')!;
+  const body = await c.req.parseBody();
+  const rawInput = { ingredients: formString(body.ingredients), servings: Number(body.servings), preferences: formString(body.preferences) };
+  let input;
+  try { input = validateSmashInput(rawInput); }
+  catch (error) { return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, (error as Error).message, { ...rawInput, servings: Number.isFinite(rawInput.servings) ? rawInput.servings : 2 }), 400); }
+  let recipe: SmashRecipe;
+  try {
+    if (!c.env.TRAIN_SMASH_URL || !c.env.TRAIN_SMASH_TOKEN) throw new Error('The recipe agent is unavailable. Please try again shortly.');
+    const response = await fetch(c.env.TRAIN_SMASH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.env.TRAIN_SMASH_TOKEN }, body: JSON.stringify(input), signal: AbortSignal.timeout(160000) });
+    if (response.status === 429) throw new Error('Another recipe is cooking up. Try again in a moment.');
+    if (!response.ok) throw new Error('The recipe agent could not finish. Please try again.');
+    recipe = validateSmashRecipe(await response.json());
+    if (recipe.servings !== input.servings) throw new Error('The recipe servings did not match. Please try again.');
+  } catch (error) {
+    const message = error instanceof Error && !['TypeError', 'TimeoutError', 'AbortError'].includes(error.name) ? error.message : 'The recipe agent could not finish. Please try again.';
+    return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), undefined, message, input), 503);
+  }
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare('INSERT INTO train_smashes (id, user_id, input_json, recipe_json) VALUES (?, ?, ?, ?)').bind(id, user.id, JSON.stringify(input), JSON.stringify(recipe)).run();
+  return c.redirect(smashPath(id), 303);
+});
+app.get('/train-smash/:id', async (c) => {
+  const user = c.get('user')!;
+  const draft = await getSmash(c.env.DB, c.req.param('id'), user);
+  if (!draft) return c.notFound();
+  return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, '', JSON.parse(draft.input_json), !!(await getRecipe(c.env.DB, 'train-smash:' + draft.id))));
+});
+app.post('/train-smash/:id/save', requireParent, async (c) => {
+  const user = c.get('user')!;
+  const draft = await getSmash(c.env.DB, c.req.param('id'), user);
+  if (!draft) return c.notFound();
+  if ((await c.req.parseBody()).tried !== 'yes') return c.html(smashPage(user, await listSmashes(c.env.DB, user.id), draft, 'Try it first, then tick the box if you liked it.', JSON.parse(draft.input_json)), 400);
+  const recipe = validateSmashRecipe(JSON.parse(draft.recipe_json));
+  await saveRecipe(c.env.DB, {
+    source: { site: 'train-smash', id: draft.id, url: smashPath(draft.id), retrievedAt: draft.created_at },
+    recipe: { title: recipe.title, subtitle: 'Serves ' + recipe.servings + ' · AI-created', description: recipe.description + '\n\n' + recipe.notes,
+      duration: { from: recipe.minutes, to: recipe.minutes, unit: 'minutes' }, difficulty: '', tags: ['Train Smash'],
+      macros: { perServing: { kcal: null, protein: null, carbs: null, fat: null } }, allergens: [],
+      ingredients: recipe.ingredients.map((text) => ({ text, kind: 'provided', allergens: [] })),
+      steps: recipe.steps.map((text) => ({ title: '', text })), utensils: [], images: [] }
+  }, '', '', true);
+  return c.redirect('/recipes/train-smash:' + draft.id, 303);
+});
+
 app.get('/health', (c) => c.json({ ok: true }));
 
-app.get('/media/*', async (c) => {
+app.get('/media/*', requireAuth, async (c) => {
   const key = c.req.path.slice('/media/'.length);
   if (!/^recipes\/[a-z0-9-]+\/[a-z0-9._-]+$/i.test(key)) return c.notFound();
   const object = await c.env.MEDIA.get(key);
@@ -531,8 +830,9 @@ app.get('/media/*', async (c) => {
   return new Response(object.body, { headers });
 });
 
-app.get('/ingredients', async (c) => c.html(ingredientsPage(
+app.get('/ingredients', requireAuth, async (c) => c.html(ingredientsPage(
   await listIngredients(c.env.DB),
+  c.get('user')!,
   c.req.query('reviewed')
     ? { kind: 'success', message: 'Ingredient updated.' }
     : c.req.query('updated')
@@ -540,7 +840,7 @@ app.get('/ingredients', async (c) => c.html(ingredientsPage(
       : c.req.query('deleted') ? { kind: 'success', message: 'Ingredient deleted.' } : undefined
 )));
 
-app.post('/ingredients/:ingredientId/review', async (c) => {
+app.post('/ingredients/:ingredientId/review', requireParent, async (c) => {
   const ingredientId = c.req.param('ingredientId');
   if (!/^\d+$/.test(ingredientId)) return c.notFound();
   const ingredient = await c.env.DB.prepare(
@@ -553,13 +853,13 @@ app.post('/ingredients/:ingredientId/review', async (c) => {
   const normalizedName = normalizeIngredientName(name);
   const status = reviewStatus(body.status);
   if (!normalizedName) {
-    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), c.get('user')!, {
       kind: 'error',
       message: 'Ingredient name is required.'
     }), 400);
   }
   if (!status) {
-    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), c.get('user')!, {
       kind: 'error',
       message: 'Choose a valid ingredient status.'
     }), 400);
@@ -572,7 +872,7 @@ app.post('/ingredients/:ingredientId/review', async (c) => {
   const rawPurchaseUnit = formString(body.purchase_unit);
   const unit = reviewPurchaseUnit(body.purchase_unit);
   if ((rawWoolworthsUrl && !productUrl) || (rawPurchaseQuantity && quantity == null) || (rawPurchaseUnit && !unit) || (!!rawPurchaseQuantity !== !!rawPurchaseUnit)) {
-    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), c.get('user')!, {
       kind: 'error',
       message: 'Use a Woolworths product URL and a valid purchase amount with unit.'
     }), 400);
@@ -582,7 +882,7 @@ app.post('/ingredients/:ingredientId/review', async (c) => {
     'SELECT id FROM ingredients WHERE normalized_name = ? AND id != ?'
   ).bind(normalizedName, ingredientId).first<{ id: number }>();
   if (duplicate) {
-    return c.html(ingredientsPage(await listIngredients(c.env.DB), {
+    return c.html(ingredientsPage(await listIngredients(c.env.DB), c.get('user')!, {
       kind: 'error',
       message: 'An ingredient with that name already exists.'
     }), 400);
@@ -611,7 +911,7 @@ app.post('/ingredients/:ingredientId/review', async (c) => {
   return c.redirect('/ingredients?' + (ingredient.enrichment_status === 'needs_review' ? 'reviewed=1' : 'updated=1'), 303);
 });
 
-app.post('/ingredients/:ingredientId/delete', async (c) => {
+app.post('/ingredients/:ingredientId/delete', requireParent, async (c) => {
   const ingredientId = c.req.param('ingredientId');
   if (!/^\d+$/.test(ingredientId)) return c.notFound();
   const ingredient = await c.env.DB.prepare(
@@ -625,14 +925,14 @@ app.post('/ingredients/:ingredientId/delete', async (c) => {
   return c.redirect('/ingredients?deleted=1', 303);
 });
 
-app.get('/recipes/:recipeId', async (c) => {
+app.get('/recipes/:recipeId', requireAuth, async (c) => {
   const recipeId = c.req.param('recipeId');
   if (!validRecipeId(recipeId)) return c.notFound();
   const recipe = await getRecipe(c.env.DB, recipeId);
-  return recipe ? c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id))) : c.notFound();
+  return recipe ? c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), c.get('user')!)) : c.notFound();
 });
 
-app.post('/recipes/:recipeId/cook', async (c) => {
+app.post('/recipes/:recipeId/cook', requireParent, async (c) => {
   const recipeId = c.req.param('recipeId');
   if (!validRecipeId(recipeId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
   const result = await c.env.DB.prepare(
@@ -642,7 +942,7 @@ app.post('/recipes/:recipeId/cook', async (c) => {
   return c.redirect('/recipes/' + encodeURIComponent(recipeId), 303);
 });
 
-app.post('/recipes/:recipeId/cooks/:cookId/delete', async (c) => {
+app.post('/recipes/:recipeId/cooks/:cookId/delete', requireParent, async (c) => {
   const recipeId = c.req.param('recipeId');
   const cookId = c.req.param('cookId');
   if (!validRecipeId(recipeId) || !/^\d+$/.test(cookId) || !(await getRecipe(c.env.DB, recipeId))) return c.notFound();
@@ -653,7 +953,7 @@ app.post('/recipes/:recipeId/cooks/:cookId/delete', async (c) => {
   return c.redirect('/recipes/' + encodeURIComponent(recipeId), 303);
 });
 
-app.post('/recipes/:recipeId/delete', async (c) => {
+app.post('/recipes/:recipeId/delete', requireParent, async (c) => {
   const recipeId = c.req.param('recipeId');
   if (!validRecipeId(recipeId)) return c.notFound();
   if (!(await getRecipe(c.env.DB, recipeId))) return c.notFound();
@@ -665,7 +965,7 @@ app.post('/recipes/:recipeId/delete', async (c) => {
   return c.redirect('/?deleted=1', 303);
 });
 
-app.post('/recipes/:recipeId/edit', async (c) => {
+app.post('/recipes/:recipeId/edit', requireParent, async (c) => {
   const recipeId = c.req.param('recipeId');
   if (!validRecipeId(recipeId)) return c.notFound();
   const recipe = await getRecipe(c.env.DB, recipeId);
@@ -673,20 +973,20 @@ app.post('/recipes/:recipeId/edit', async (c) => {
   const body = await c.req.parseBody();
   const title = formString(body.title);
   const imageUrl = formString(body.image_url);
-  if (!title) return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), 'Recipe name is required.'), 400);
+  if (!title) return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), c.get('user')!, 'Recipe name is required.'), 400);
   if (imageUrl) {
-    try { if (new URL(imageUrl).protocol !== 'https:') throw new Error(); } catch { return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), 'Image URL must use HTTPS.'), 400); }
+    try { if (new URL(imageUrl).protocol !== 'https:') throw new Error(); } catch { return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), c.get('user')!, 'Image URL must use HTTPS.'), 400); }
   }
   let image = { url: recipe.image_url, key: '' };
   try {
     if (imageUrl && imageUrl !== recipe.source_image_url) image = await copyImage(c.env.MEDIA, imageUrl, recipe.source, recipe.id.split(':')[1]);
     const result = await c.env.DB.prepare('UPDATE recipes SET title = ?, subtitle = ?, description = ?, image_url = ?, source_image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(title, formString(body.subtitle), formString(body.description), image.url, imageUrl || recipe.source_image_url, recipeId).run();
     if (!result.success) throw new Error('The recipe could not be updated.');
-  } catch (error) { return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), error instanceof Error ? error.message : 'The recipe could not be updated.'), 500); }
+  } catch (error) { return c.html(recipeDetailPage(recipe, await listCooks(c.env.DB, recipe.id), c.get('user')!, error instanceof Error ? error.message : 'The recipe could not be updated.'), 500); }
   return c.redirect(recipePath(recipe) + '?updated=1', 303);
 });
 
-app.get('/', async (c) => {
+app.get('/', requireAuth, async (c) => {
   const flash = c.req.query('imported')
     ? {
         kind: 'success' as const,
@@ -697,14 +997,15 @@ app.get('/', async (c) => {
     : c.req.query('deleted')
       ? { kind: 'success' as const, message: 'Recipe deleted from your box.' }
     : undefined;
-  return c.html(page(await listRecipes(c.env.DB), flash));
+  return c.html(page(await listRecipes(c.env.DB), c.get('user')!, flash));
 });
 
-app.post('/', async (c) => {
+app.post('/', requireParent, async (c) => {
+  const user = c.get('user')!;
   const body = await c.req.parseBody();
   const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
   if (!rawUrl) {
-    return c.html(page(await listRecipes(c.env.DB), {
+    return c.html(page(await listRecipes(c.env.DB), user, {
       kind: 'error',
       message: 'Paste a recipe URL first.',
       url: rawUrl
@@ -715,7 +1016,7 @@ app.post('/', async (c) => {
   try {
     parsed = parseRecipeUrl(rawUrl);
   } catch (error) {
-    return c.html(page(await listRecipes(c.env.DB), {
+    return c.html(page(await listRecipes(c.env.DB), user, {
       kind: 'error',
       message: error instanceof Error ? error.message : 'That recipe URL is not supported.',
       url: rawUrl
@@ -726,7 +1027,7 @@ app.post('/', async (c) => {
   try {
     candidate = await extractRecipe(parsed.url) as ImportCandidate;
   } catch (error) {
-    return c.html(page(await listRecipes(c.env.DB), {
+    return c.html(page(await listRecipes(c.env.DB), user, {
       kind: 'error',
       message: error instanceof Error ? error.message : 'The recipe could not be imported.',
       url: rawUrl
@@ -744,7 +1045,7 @@ app.post('/', async (c) => {
     return c.redirect('/?imported=1&status=' + status, 303);
   } catch (error) {
     if (imageKey) await c.env.MEDIA.delete(imageKey);
-    return c.html(page(await listRecipes(c.env.DB), {
+    return c.html(page(await listRecipes(c.env.DB), user, {
       kind: 'error',
       message: error instanceof Error ? error.message : 'The recipe could not be saved.',
       url: rawUrl

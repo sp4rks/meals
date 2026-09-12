@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "description", "servings", "minutes", "ingredients", "steps", "notes"],
+  "properties": {
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "servings": {"type": "integer"},
+    "minutes": {"type": "integer"},
+    "ingredients": {"type": "array", "items": {"type": "string"}},
+    "steps": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  }
+}
